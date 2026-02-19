@@ -1,0 +1,21 @@
+htm_params:
+  tm:
+    cellsPerColumn: 32
+    activationThreshold: 13
+    initialPerm: 0.21
+    permanenceConnected: 0.5
+    minThreshold: 10
+    newSynapseCount: 20
+    permanenceInc: 0.1
+    permanenceDec: 0.1
+    predictedSegmentDecrement: 0.0
+    maxSegmentsPerCell: 128
+    maxSynapsesPerSegment: 32
+
+  anomaly_likelihood:
+    probationaryPeriod: 200
+    reestimationPeriod: 100
+
+decision:
+  threshold: 0.999
+  method: max

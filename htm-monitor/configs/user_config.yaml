@@ -1,0 +1,80 @@
+features:
+  timestamp:
+    type: datetime
+    format: "%Y-%m-%d %H:%M:%S"
+    timeOfDay: 21
+    weekend: 0
+    dayOfWeek: 0
+    holiday: 0
+    season: 0
+  jumpsdown: { type: float, size: 512, activeBits: 21, resolution: 0.1, seed: 42 }
+  jumpsup:   { type: float, size: 512, activeBits: 21, resolution: 0.1, seed: 43 }
+  nojump:    { type: float, size: 512, activeBits: 21, resolution: 0.1, seed: 44 }
+
+
+models:
+  jumpsdown_model:
+    source: jumpsdown
+    features: ["timestamp", "jumpsdown"]
+  jumpsup_model:
+    source: jumpsup
+    features: ["timestamp", "jumpsup"]
+  nojump_model:
+    source: nojump
+    features: ["timestamp", "nojump"]
+
+
+data:
+  timebase:
+    mode: union          # union|intersection (union default)
+    on_missing: skip     # skip|hold_last (you chose skip)
+
+  sources:
+    - name: jumpsdown
+      kind: csv
+      path: /Users/samheiserman/Desktop/datasets/NAB/artificialWithAnomaly/artificialWithAnomaly/art_daily_jumpsdown.csv
+      timestamp_col: timestamp
+      timestamp_format: "%Y-%m-%d %H:%M:%S"
+      fields:
+        jumpsdown: value
+
+      labels:
+        combined_labels_path: /Users/samheiserman/Desktop/datasets/NAB/combined_labels.json
+        series_key: "artificialWithAnomaly/art_daily_jumpsdown.csv"
+
+    - name: jumpsup
+      kind: csv
+      path: /Users/samheiserman/Desktop/datasets/NAB/artificialWithAnomaly/artificialWithAnomaly/art_daily_jumpsup.csv
+      timestamp_col: timestamp
+      timestamp_format: "%Y-%m-%d %H:%M:%S"
+      fields:
+        jumpsup: value
+
+      labels:
+        combined_labels_path: /Users/samheiserman/Desktop/datasets/NAB/combined_labels.json
+        series_key: "artificialWithAnomaly/art_daily_jumpsup.csv"
+
+    - name: nojump
+      kind: csv
+      path: /Users/samheiserman/Desktop/datasets/NAB/artificialWithAnomaly/artificialWithAnomaly/art_daily_nojump.csv
+      timestamp_col: timestamp
+      timestamp_format: "%Y-%m-%d %H:%M:%S"
+      fields:
+        nojump: value
+      labels:
+        combined_labels_path: /Users/samheiserman/Desktop/datasets/NAB/combined_labels.json
+        series_key: "artificialWithAnomaly/art_daily_nojump.csv"
+
+
+decision:
+  threshold: 0.75
+  method: kofn
+  k: 2
+
+
+plot:
+  enable: true
+  step_pause_s: 0.05
+  window: 1000
+  show_ground_truth: true
+

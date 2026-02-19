@@ -1,0 +1,37 @@
+from enum import Enum
+
+
+# DEFINE ALLOWED TYPES HERE
+__ENCODABLE_NUMERIC = frozenset(['int', 'float'])
+__ENCODABLE_DATETIME = frozenset(['time', 'date', 'datetime', 'timestamp'])
+__ENCODABLE_CATEGORIC = frozenset(['cat', 'categoric', 'category'])
+
+class HTMType(Enum):
+    Numeric = 0
+    Datetime = 1
+    Categoric = 2
+
+
+def to_htm_type(dtype: str, /) -> HTMType:
+    """
+    Converts one of the allowed str types to an HTMType
+    """
+    if not isinstance(dtype, str):
+        raise TypeError(f"dtype must be str, got {type(dtype).__name__}")
+
+    key = dtype.strip().lower()
+
+    if key in __ENCODABLE_NUMERIC:
+        return HTMType.Numeric
+    elif key in __ENCODABLE_DATETIME:
+        return HTMType.Datetime
+    elif key in __ENCODABLE_CATEGORIC:
+        return HTMType.Categoric
+
+    # future implementations here..
+
+    else:
+        raise TypeError(
+            f"Type '{dtype}' has no equivalent HTMType. "
+            f"Allowed: {sorted(__ENCODABLE_NUMERIC | __ENCODABLE_DATETIME | __ENCODABLE_CATEGORIC)}"
+        )
