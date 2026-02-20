@@ -1,6 +1,7 @@
 # demo/live_plot.py
 from __future__ import annotations
 
+import numbers
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Deque, Dict, List, Mapping, Optional, Set, Tuple
@@ -29,12 +30,14 @@ class LivePlot:
         self._raw: Dict[str, Deque[float]] = {}
         self._lik: Dict[str, Deque[float]] = {}
         self._gt: Dict[str, Deque[float]] = {}  # 0/1 per timestep (within window)
+        self._hot: Dict[str, Deque[float]] = {}  # 0/1 per timestep (within window)
 
         # matplotlib objects (built once we know models)
         self._fig = None
         self._axes_val: Dict[str, Any] = {}
         self._axes_anom: Dict[str, Any] = {}
         self._ax_sys = None
+        self._ax_spacer = None
 
         self._l_val: Dict[str, Any] = {}
         self._l_raw: Dict[str, Any] = {}
@@ -43,14 +46,17 @@ class LivePlot:
 
         self._sys_fill = None
         self._sys_line = None
+        self._legend = None
 
         # vline handles we explicitly create/remove (no try/except)
         self._gt_lines: Dict[str, List[Any]] = {}
+        self._hot_spans: Dict[str, List[Any]] = {}
 
         self._n = 0
 
         # styles (single source of truth)
         self._gt_style = dict(color="purple", linewidth=2.5, alpha=0.75, linestyle=":")
+        self._hot_span_style = dict(alpha=0.18, linewidth=0)  # very light highlight
 
         plt.ion()
 
@@ -62,6 +68,42 @@ class LivePlot:
             self._lik[m] = deque(maxlen=self.window)
             self._gt[m] = deque(maxlen=self.window)
             self._gt_lines[m] = []
+            self._hot[m] = deque(maxlen=self.window)
+            self._hot_spans[m] = []
+
+    @staticmethod
+    def _display_name(model_name: str) -> str:
+        # Save space: "jumpsdown_model" -> "jumpsdown"
+        return model_name.removesuffix("_model")
+
+    @staticmethod
+    def _contiguous_true_runs(xs: List[int], flags: List[float]) -> List[Tuple[int, int]]:
+        """
+        Return runs (x_start, x_end_exclusive) where flags are truthy.
+        Uses xs positions (assumes xs is sorted, one per timestep).
+        """
+        runs: List[Tuple[int, int]] = []
+        if not xs or not flags:
+            return runs
+        # infer a reasonable step for end-caps (t is usually integer, so dt=1)
+        dt = 1
+        if len(xs) >= 2:
+            dx = xs[1] - xs[0]
+            if dx > 0:
+                dt = dx
+
+        start: Optional[int] = None
+        for x, f in zip(xs, flags):
+            if f and start is None:
+                start = x
+            elif (not f) and start is not None:
+                # end exclusive at first non-hot timestep
+                runs.append((start, x))
+                start = None
+        if start is not None:
+            # end exclusive past the final visible timestep so span is visible
+            runs.append((start, xs[-1] + dt))
+        return runs
 
     def _build_layout(self, model_names: List[str]) -> None:
         """
@@ -75,10 +117,19 @@ class LivePlot:
         self._init_model_series(model_names)
 
         n = len(self._model_names)
-        nrows = (2 * n) + 1
+        # Add one dedicated spacer row before SYSTEM ALERT to create visible separation.
+        # Layout: (value, anom) * n, spacer, system
+        nrows = (2 * n) + 2
 
         self._fig = plt.figure()
-        gs = self._fig.add_gridspec(nrows, 1, height_ratios=[3, 1] * n + [1], hspace=0.15)
+        # Give SYSTEM ALERT a bit more height + add more vertical breathing room overall.
+        # (Keeps the demo legible to non-technical viewers.)
+        gs = self._fig.add_gridspec(
+            nrows,
+            1,
+            height_ratios=[3, 1] * n + [0.55, 1.6],
+            hspace=0.18,
+        )
 
         first_ax = None
         for i, m in enumerate(self._model_names):
@@ -90,35 +141,48 @@ class LivePlot:
             self._axes_val[m] = axv
             self._axes_anom[m] = axa
 
-            (lv,) = axv.plot([], [], label="value")
-            (lr,) = axa.plot([], [], label="raw")
-            (ll,) = axa.plot([], [], label="likelihood")
+            (lv,) = axv.plot([], [], label="value", color="black")
+            (lr,) = axa.plot([], [], label="raw")              # default blue
+            (ll,) = axa.plot([], [], label="likelihood")       # default orange
             self._l_val[m] = lv
             self._l_raw[m] = lr
             self._l_lik[m] = ll
 
-            axv.set_title(f"{m}")
+            # Put model name on the left instead of crowding titles
+            axv.set_ylabel(self._display_name(m), rotation=0, labelpad=30, va="center")
             axv.grid(True, alpha=0.3)
-            axv.legend(loc="upper right")
 
             if self.likelihood_threshold is not None:
                 self._thr_line[m] = axa.axhline(
-                    self.likelihood_threshold, alpha=0.35, linestyle="--", label="threshold"
+                    self.likelihood_threshold, alpha=0.35, linestyle="--", label="_nolegend_"
                 )
             axa.grid(True, alpha=0.3)
             axa.set_ylim(0.0, 1.0)
-            axa.legend(loc="upper right")
+
+            # Hide x tick labels everywhere except the very bottom system panel
+            axv.tick_params(labelbottom=False)
+            axa.tick_params(labelbottom=False)
+
+        # spacer axis: share x, but hide everything (acts like a gap)
+        self._ax_spacer = self._fig.add_subplot(gs[-2, 0], sharex=first_ax)
+        self._ax_spacer.set_axis_off()
+        # ensure no tick labels appear in the spacer row
+        self._ax_spacer.tick_params(labelbottom=False)
 
         self._ax_sys = self._fig.add_subplot(gs[-1, 0], sharex=first_ax)
-        self._ax_sys.set_title("SYSTEM ALERT")
+        self._ax_sys.set_title("SYSTEM ALERT", pad=10)
         self._ax_sys.set_ylim(-0.05, 1.05)
         self._ax_sys.grid(True, alpha=0.3)
         self._ax_sys.set_xlabel("t")
 
         # initialize system alert visuals
-        (self._sys_line,) = self._ax_sys.step([], [], where="post", label="alert")
-        self._ax_sys.legend(loc="upper right")
+        (self._sys_line,) = self._ax_sys.step([], [], where="post", label="system alert", color="red")
         self._fig.suptitle("HTM Monitor (live)", y=0.995)
+
+        # Single global legend (clean, non-crowded)
+        handles = [lv, lr, ll, self._sys_line]
+        labels = ["value", "raw anomaly", "anomaly likelihood", "system alert"]
+        self._legend = self._fig.legend(handles, labels, loc="upper right")
 
     def update(
         self,
@@ -143,6 +207,7 @@ class LivePlot:
             self._raw.clear()
             self._lik.clear()
             self._gt.clear()
+            self._hot.clear()
             self._axes_val.clear()
             self._axes_anom.clear()
             self._l_val.clear()
@@ -150,6 +215,7 @@ class LivePlot:
             self._l_lik.clear()
             self._thr_line.clear()
             self._gt_lines.clear()
+            self._hot_spans.clear()
             self._build_layout(model_names)
 
         # multi-model values provided by run_pipeline.py (preferred)
@@ -165,6 +231,9 @@ class LivePlot:
             gt_by_model = None
 
         alert = 1.0 if (isinstance(result, Mapping) and result.get("alert")) else 0.0
+        hot_by_model = result.get("hot_by_model") if isinstance(result, Mapping) else None
+        if not isinstance(hot_by_model, Mapping):
+            hot_by_model = None
 
         self._t.append(int(t))
         self._alert.append(float(alert))
@@ -172,12 +241,12 @@ class LivePlot:
         # append one point per model (NaN for missing => gaps)
         for m, out in model_outputs.items():
             v = values_by_model.get(m)
-            v_f = float(v) if isinstance(v, (int, float)) else float("nan")
+            v_f = float(v) if isinstance(v, numbers.Real) else float("nan")
 
             raw = out.get("raw")
             lik = out.get("likelihood")
-            raw_f = float(raw) if isinstance(raw, (int, float)) else float("nan")
-            lik_f = float(lik) if isinstance(lik, (int, float)) else float("nan")
+            raw_f = float(raw) if isinstance(raw, numbers.Real) else float("nan")
+            lik_f = float(lik) if isinstance(lik, numbers.Real) else float("nan")
 
             if gt_by_model is not None:
                 gset = gt_by_model.get(m)
@@ -190,11 +259,26 @@ class LivePlot:
             self._lik[m].append(lik_f)
             self._gt[m].append(1.0 if gt_flag else 0.0)
 
+            # Hot flag: prefer Decision-provided truth; fallback to simple threshold
+            if hot_by_model is not None:
+                self._hot[m].append(1.0 if bool(hot_by_model.get(m)) else 0.0)
+            else:
+                is_hot = bool(
+                    isinstance(lik, numbers.Real)
+                    and self.likelihood_threshold is not None
+                    and float(lik) >= float(self.likelihood_threshold)
+                )
+                self._hot[m].append(1.0 if is_hot else 0.0)
+
         self._n += 1
         if self._n % int(self.refresh_every) != 0:
             return
 
         xs = list(self._t)
+        if xs:
+            # Force a true sliding x-window (matplotlib otherwise keeps old limits)
+            self._ax_sys.set_xlim(xs[0], xs[-1])
+
         # update model plots
         for m in self._model_names:
             axv = self._axes_val[m]
@@ -213,6 +297,15 @@ class LivePlot:
                 if g:
                     self._gt_lines[m].append(axv.axvline(x, **self._gt_style))
 
+            # clear + redraw HOT spans (simple + obvious)
+            for sp in self._hot_spans[m]:
+                sp.remove()
+            self._hot_spans[m] = []
+            runs = self._contiguous_true_runs(xs, list(self._hot[m]))
+            for x0, x1 in runs:
+                # highlight on the value axis so it's visible even if anom axis is busy
+                self._hot_spans[m].append(axv.axvspan(x0, x1, **self._hot_span_style))
+
             axv.relim()
             axv.autoscale_view()
             axa.relim()
@@ -225,7 +318,7 @@ class LivePlot:
         # remove old fill, draw new fill (simple + very legible)
         if self._sys_fill is not None:
             self._sys_fill.remove()
-        self._sys_fill = self._ax_sys.fill_between(xs, 0.0, ys, step="post", alpha=0.35)
+        self._sys_fill = self._ax_sys.fill_between(xs, 0.0, ys, step="post", alpha=0.25)
 
         self._fig.canvas.draw_idle()
         self._fig.canvas.flush_events()

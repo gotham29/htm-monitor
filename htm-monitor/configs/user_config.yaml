@@ -7,10 +7,34 @@ features:
     dayOfWeek: 0
     holiday: 0
     season: 0
-  jumpsdown: { type: float, size: 512, activeBits: 21, resolution: 0.1, seed: 42 }
-  jumpsup:   { type: float, size: 512, activeBits: 21, resolution: 0.1, seed: 43 }
-  nojump:    { type: float, size: 512, activeBits: 21, resolution: 0.1, seed: 44 }
 
+  jumpsdown:
+    type: float
+    size: 512
+    activeBits: 21
+    numBuckets: 130
+    minVal: 18.00203996
+    maxVal: 87.99838184
+    seed: 42
+
+  jumpsup:
+    type: float
+    size: 512
+    activeBits: 21
+    numBuckets: 130
+    minVal: 18.00100982
+    maxVal: 164.9474805
+    seed: 43
+
+  nojump:
+    type: float
+    size: 512
+    activeBits: 21
+    numBuckets: 130
+    minVal: 18.00050055
+    maxVal: 87.97331353
+    seed: 44
+    
 
 models:
   jumpsdown_model:
@@ -67,14 +91,18 @@ data:
 
 
 decision:
-  threshold: 0.75
-  method: kofn
+  threshold: 0.40
+  method: kofn_window
   k: 2
+  window:
+    size: 12          # number of steps (simple, matches your current loop)
+    per_model_hits: 1 # m in "N-of-W" (optional; default 1)
+    mode: hits        # hits | any | ema   (start with hits)
 
 
 plot:
   enable: true
-  step_pause_s: 0.05
+  step_pause_s: 0.01
   window: 1000
   show_ground_truth: true
 

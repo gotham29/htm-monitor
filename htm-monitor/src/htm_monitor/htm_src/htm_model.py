@@ -1,4 +1,5 @@
 import math
+import logging
 from typing import Mapping, Union
 
 import numpy as np
@@ -73,11 +74,47 @@ class HTMmodel:
                 meaning: HTM native alg that for postprocessing raw anomaly scores
         """
 
-        LearningPeriod = int(math.floor(self.models_params["anomaly_likelihood"]["probationaryPeriod"] / 2.0))
+        al_cfg = self.models_params.get("anomaly_likelihood", {}) or {}
+
+        # Preferred explicit config (matches your new htm_defaults.yaml)
+        learning_period = al_cfg.get("learningPeriod")
+        estimation_samples = al_cfg.get("estimationSamples")
+
+        # Backward-compat: allow older configs that still specify probationaryPeriod
+        probationary = al_cfg.get("probationaryPeriod")
+        if (learning_period is None or estimation_samples is None) and probationary is not None:
+            learning_period = int(math.floor(float(probationary) / 2.0))
+            estimation_samples = int(probationary) - int(learning_period)
+
+        # Final defaults (only if neither explicit nor probationary provided)
+        if learning_period is None:
+            learning_period = 288
+        if estimation_samples is None:
+            estimation_samples = 100
+
+        historic_window = int(al_cfg.get("historicWindowSize", 8640))
+        reestimation_period = int(al_cfg.get("reestimationPeriod", 100))
+        averaging_window = int(al_cfg.get("averagingWindow", 10))
+
+        # Basic validation to catch silent misconfig
+        learning_period = int(learning_period)
+        estimation_samples = int(estimation_samples)
+        if learning_period <= 0:
+            raise ValueError("anomaly_likelihood.learningPeriod must be > 0")
+        if estimation_samples <= 0:
+            raise ValueError("anomaly_likelihood.estimationSamples must be > 0")
+        if historic_window < estimation_samples:
+            raise ValueError("anomaly_likelihood.historicWindowSize must be >= estimationSamples")
+        if averaging_window <= 0:
+            raise ValueError("anomaly_likelihood.averagingWindow must be > 0")
+
         return AnomalyLikelihood(
-            learningPeriod=LearningPeriod,
-            estimationSamples=self.models_params["anomaly_likelihood"]["probationaryPeriod"] - LearningPeriod,
-            reestimationPeriod=self.models_params["anomaly_likelihood"]["reestimationPeriod"])
+            learningPeriod=learning_period,
+            estimationSamples=estimation_samples,
+            historicWindowSize=historic_window,
+            reestimationPeriod=reestimation_period,
+            averagingWindow=averaging_window,
+        )
 
     def get_alikelihood(self, value, anomaly_score, timestamp) -> float:
         """

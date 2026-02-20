@@ -223,7 +223,8 @@ class AnomalyLikelihood(Serializable):
                  learningPeriod=288,
                  estimationSamples=100,
                  historicWindowSize=8640,
-                 reestimationPeriod=100):
+                 reestimationPeriod=100,
+                 averagingWindow=10):
         """
         NOTE: Anomaly likelihood scores are reported at a flat 0.5 for
         learningPeriod + estimationSamples iterations.
@@ -266,7 +267,7 @@ class AnomalyLikelihood(Serializable):
 
         self._probationaryPeriod = self._learningPeriod + estimationSamples
         self._reestimationPeriod = reestimationPeriod
-
+        self._averagingWindow = int(averagingWindow)
 
     def __eq__(self, o):
         # pylint: disable=W0212
@@ -446,6 +447,7 @@ class AnomalyLikelihood(Serializable):
 
                 _, _, self._distribution = estimateAnomalyLikelihoods(
                     self._historicalScores,
+                    averagingWindow=self._averagingWindow,
                     skipRecords=numSkipRecords)
 
             likelihoods, _, self._distribution = updateAnomalyLikelihoods(

@@ -13,9 +13,8 @@ htm_params:
     maxSynapsesPerSegment: 32
 
   anomaly_likelihood:
-    probationaryPeriod: 200
-    reestimationPeriod: 100
-
-decision:
-  threshold: 0.999
-  method: max
+    learningPeriod: 150
+    estimationSamples: 50
+    historicWindowSize: 1000
+    reestimationPeriod: 30
+    averagingWindow: 3

@@ -55,10 +55,23 @@ def build_from_config(defaults_path: str, user_path: str):
     engine = Engine(models, model_sources)
 
     dcfg = cfg["decision"]
+
+    # Optional windowed decision config:
+    # decision:
+    #   method: kofn_window
+    #   window:
+    #     size: 12
+    #     per_model_hits: 2
+    wcfg: Dict[str, Any] = dict(dcfg.get("window") or {})
+    window_size = int(wcfg.get("size", 1) or 1)
+    per_model_hits = int(wcfg.get("per_model_hits", 1) or 1)
+
     decision = Decision(
         threshold=dcfg["threshold"],
         method=dcfg.get("method", "max"),
         k=dcfg.get("k"),
+        window_size=window_size,
+        per_model_hits=per_model_hits,
     )
 
     return cfg, engine, decision
