@@ -1,5 +1,18 @@
 htm_params:
   tm:
+    # Optional scaling for count-like TM parameters when input sparsity changes.
+    # Rationale: activationThreshold/minThreshold/newSynapseCount scale with the
+    # expected number of active columns per timestep (not total columnDimensions).
+    #
+    # Defaults below are Numenta-ish: ~40 active columns (≈2% of 2048).
+    scaling:
+      enabled: true
+      baseActiveColumns: 40
+      # Hard clamps to avoid degenerate configs when active columns are tiny/huge.
+      clamp:
+        activationThresholdMin: 3
+        minThresholdMin: 2
+        newSynapseCountMin: 4
     cellsPerColumn: 32
     activationThreshold: 13
     initialPerm: 0.21

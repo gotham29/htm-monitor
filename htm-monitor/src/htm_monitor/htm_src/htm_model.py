@@ -1,6 +1,6 @@
 import math
 import logging
-from typing import Mapping, Union
+from typing import Mapping, Union, Any, Dict, Optional
 
 import numpy as np
 from htm.bindings.algorithms import TemporalMemory
@@ -8,6 +8,9 @@ from htm.bindings.sdr import SDR
 
 from .feature import Feature, separate_time_and_rest
 from .anomalylikelihood import AnomalyLikelihood
+from .types import HTMType
+
+log = logging.getLogger(__name__)
 
 
 class HTMmodel:
@@ -30,6 +33,78 @@ class HTMmodel:
         # self.features_samples = {f: [] for f in self.feature_names}
         self.feature_timestamp = separate_time_and_rest(self.features.values())[0]
 
+    @staticmethod
+    def _clamp_int(x: float, lo: int, hi: int) -> int:
+        return int(max(lo, min(hi, int(round(x)))))
+
+    def _expected_active_columns(self) -> int:
+        """
+        Estimate expected active columns per timestep from Feature params.
+
+        - Numeric/Categoric RDSE: uses params['activeBits'] when present.
+        - Datetime DateEncoder: uses sum of enabled sub-encoder widths:
+            timeOfDay/weekend/dayOfWeek/holiday/season
+          (In Numenta-style encoders, these are typically the "w" active bits.)
+
+        If any piece is missing, we simply skip it (robust, no guessing).
+        """
+        total = 0
+        for feat in self.features.values():
+            p = dict(feat.params or {})
+            if feat.type in (HTMType.Numeric, HTMType.Categoric):
+                ab = p.get("activeBits")
+                if isinstance(ab, (int, float)) and ab > 0:
+                    total += int(ab)
+            elif feat.type is HTMType.Datetime:
+                for k in ("timeOfDay", "weekend", "dayOfWeek", "holiday", "season"):
+                    v = p.get(k)
+                    if isinstance(v, (int, float)) and v > 0:
+                        total += int(v)
+        return int(total)
+
+    def _scaled_tm_params(self) -> Dict[str, Any]:
+        """
+        Optionally scale count-like TM params to maintain proportions relative to
+        expected active columns per timestep.
+        """
+        tm_cfg = dict(self.models_params.get("tm", {}) or {})
+        scfg = dict(tm_cfg.get("scaling", {}) or {})
+        if not bool(scfg.get("enabled", False)):
+            return tm_cfg
+
+        base_active = scfg.get("baseActiveColumns", 40)
+        if not isinstance(base_active, (int, float)) or float(base_active) <= 0:
+            raise ValueError("tm.scaling.baseActiveColumns must be > 0")
+        base_active = float(base_active)
+
+        expected_active = float(self._expected_active_columns())
+        if expected_active <= 0:
+            # Fail loud: scaling enabled but we can't estimate active columns.
+            raise ValueError(
+                "tm.scaling.enabled is true but expected active columns estimate is 0. "
+                "Ensure features specify activeBits (RDSE) and timeOfDay/weekend/dayOfWeek/holiday/season (DateEncoder)."
+            )
+
+        s = expected_active / base_active
+
+        clamp = dict(scfg.get("clamp", {}) or {})
+        a_min = int(clamp.get("activationThresholdMin", 3))
+        m_min = int(clamp.get("minThresholdMin", 2))
+        n_min = int(clamp.get("newSynapseCountMin", 4))
+        # Upper bounds: cannot exceed expected_active for these counts.
+        hi = max(1, int(round(expected_active)))
+
+        # Scale only the count-like fields.
+        tm_cfg["activationThreshold"] = self._clamp_int(float(tm_cfg["activationThreshold"]) * s, a_min, hi)
+        tm_cfg["minThreshold"] = self._clamp_int(float(tm_cfg["minThreshold"]) * s, m_min, tm_cfg["activationThreshold"])
+        tm_cfg["newSynapseCount"] = self._clamp_int(float(tm_cfg["newSynapseCount"]) * s, n_min, hi)
+
+        log.info(
+            f"TM scaling enabled: expected_active={expected_active:.1f} base_active={base_active:.1f} scale={s:.3f} "
+            f"-> activationThreshold={tm_cfg['activationThreshold']} minThreshold={tm_cfg['minThreshold']} newSynapseCount={tm_cfg['newSynapseCount']}"
+        )
+        return tm_cfg
+
     def init_tm(self) -> TemporalMemory:
         """
         Purpose:
@@ -45,19 +120,20 @@ class HTMmodel:
         """
 
         column_dimensions = self.encoding_width
+        tm_cfg = self._scaled_tm_params()
         return TemporalMemory(
             columnDimensions=(column_dimensions,),
-            cellsPerColumn=self.models_params["tm"]["cellsPerColumn"],
-            activationThreshold=self.models_params["tm"]["activationThreshold"],
-            initialPermanence=self.models_params["tm"]["initialPerm"],
-            connectedPermanence=self.models_params["tm"]["permanenceConnected"],
-            minThreshold=self.models_params["tm"]["minThreshold"],
-            maxNewSynapseCount=self.models_params["tm"]["newSynapseCount"],
-            permanenceIncrement=self.models_params["tm"]["permanenceInc"],
-            permanenceDecrement=self.models_params["tm"]["permanenceDec"],
-            predictedSegmentDecrement=self.models_params["tm"]["predictedSegmentDecrement"],
-            maxSegmentsPerCell=self.models_params["tm"]["maxSegmentsPerCell"],
-            maxSynapsesPerSegment=self.models_params["tm"]["maxSynapsesPerSegment"],
+            cellsPerColumn=tm_cfg["cellsPerColumn"],
+            activationThreshold=tm_cfg["activationThreshold"],
+            initialPermanence=tm_cfg["initialPerm"],
+            connectedPermanence=tm_cfg["permanenceConnected"],
+            minThreshold=tm_cfg["minThreshold"],
+            maxNewSynapseCount=tm_cfg["newSynapseCount"],
+            permanenceIncrement=tm_cfg["permanenceInc"],
+            permanenceDecrement=tm_cfg["permanenceDec"],
+            predictedSegmentDecrement=tm_cfg["predictedSegmentDecrement"],
+            maxSegmentsPerCell=tm_cfg["maxSegmentsPerCell"],
+            maxSynapsesPerSegment=tm_cfg["maxSynapsesPerSegment"],
             seed=42)
 
     def init_alikelihood(self) -> AnomalyLikelihood:
