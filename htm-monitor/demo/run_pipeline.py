@@ -2,12 +2,11 @@
 
 import argparse
 import csv
-import json
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Iterator, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, Mapping, Optional, Tuple, Set, List
 
 from htm_monitor.orchestration.engine import Engine
 from htm_monitor.orchestration.decision import Decision
@@ -39,8 +38,7 @@ class _SourceCfg:
     timestamp_col: str
     timestamp_format: str
     fields: Dict[str, str]  # canonical_name -> column_name
-    labels_path: Optional[str] = None
-    labels_series_key: Optional[str] = None
+    gt_timestamps: Optional[Set[str]] = None  # inline ground truth timestamps
 
 
 def _parse_ts(s: str, fmt: str) -> datetime:
@@ -103,18 +101,41 @@ def _timebase_intersection(iters: Dict[str, Iterator[Tuple[datetime, Dict[str, A
         yield rows
 
 
+def _parse_gt_timestamps(labels: Mapping[str, Any], ts_format: str) -> Optional[Set[str]]:
+    """
+    Parse labels.timestamps as a set of timestamp strings.
+    We keep strings because the plot uses the CSV's raw timestamp strings.
+    Validate format by attempting datetime.strptime for each entry.
+    """
+    if not isinstance(labels, Mapping):
+        return None
+    ts_list = labels.get("timestamps")
+    if ts_list is None:
+        return None
+    if not isinstance(ts_list, list):
+        raise ValueError("labels.timestamps must be a list of timestamp strings")
+
+    out: Set[str] = set()
+    for v in ts_list:
+        if not isinstance(v, str):
+            raise ValueError("labels.timestamps entries must be strings")
+        _parse_ts(v, ts_format)  # validation
+        out.add(v)
+    return out
+
+
 def _load_sources(cfg: dict) -> Dict[str, _SourceCfg]:
     out: Dict[str, _SourceCfg] = {}
     for s in cfg["data"]["sources"]:
         labels = s.get("labels") or {}
+        gt = _parse_gt_timestamps(labels, s["timestamp_format"])
         out[s["name"]] = _SourceCfg(
             name=s["name"],
             path=s["path"],
             timestamp_col=s["timestamp_col"],
             timestamp_format=s["timestamp_format"],
             fields=dict(s.get("fields") or {}),
-            labels_path=labels.get("combined_labels_path"),
-            labels_series_key=labels.get("series_key"),
+            gt_timestamps=gt,
         )
     return out
 
@@ -122,13 +143,10 @@ def _load_sources(cfg: dict) -> Dict[str, _SourceCfg]:
 def _load_gt_set(sources: Dict[str, _SourceCfg], enabled: bool) -> Optional[set]:
     if not enabled:
         return None
-    # union GT across sources (keeps plot generic)
-    gt: set = set()
+    gt: set = set()  # union GT across sources (keeps plot generic)
     for s in sources.values():
-        if not s.labels_path or not s.labels_series_key:
-            continue
-        labels = json.loads(Path(s.labels_path).read_text())
-        gt.update(labels.get(s.labels_series_key, []))
+        if s.gt_timestamps:
+            gt.update(s.gt_timestamps)
     return gt
 
 
@@ -148,10 +166,8 @@ def _load_gt_by_source(sources: Dict[str, _SourceCfg], enabled: bool) -> Optiona
         return None
     out: Dict[str, set] = {}
     for name, s in sources.items():
-        if not s.labels_path or not s.labels_series_key:
-            continue
-        labels = json.loads(Path(s.labels_path).read_text())
-        out[name] = set(labels.get(s.labels_series_key, []))
+        if s.gt_timestamps:
+            out[name] = set(s.gt_timestamps)
     return out
 
 

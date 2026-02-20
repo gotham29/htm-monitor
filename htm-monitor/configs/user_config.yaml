@@ -61,10 +61,9 @@ data:
       timestamp_format: "%Y-%m-%d %H:%M:%S"
       fields:
         jumpsdown: value
-
       labels:
-        combined_labels_path: /Users/samheiserman/Desktop/datasets/NAB/combined_labels.json
-        series_key: "artificialWithAnomaly/art_daily_jumpsdown.csv"
+        timestamps:
+          - "2014-04-11 09:00:00"
 
     - name: jumpsup
       kind: csv
@@ -73,10 +72,9 @@ data:
       timestamp_format: "%Y-%m-%d %H:%M:%S"
       fields:
         jumpsup: value
-
       labels:
-        combined_labels_path: /Users/samheiserman/Desktop/datasets/NAB/combined_labels.json
-        series_key: "artificialWithAnomaly/art_daily_jumpsup.csv"
+        timestamps:
+          - "2014-04-11 09:00:00"
 
     - name: nojump
       kind: csv
@@ -86,8 +84,8 @@ data:
       fields:
         nojump: value
       labels:
-        combined_labels_path: /Users/samheiserman/Desktop/datasets/NAB/combined_labels.json
-        series_key: "artificialWithAnomaly/art_daily_nojump.csv"
+        timestamps:
+          - "2014-04-11 09:00:00"
 
 
 decision:
