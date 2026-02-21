@@ -37,15 +37,18 @@ features:
     
 
 models:
-  jumpsdown_model:
-    source: jumpsdown
-    features: ["timestamp", "jumpsdown"]
-  jumpsup_model:
-    source: jumpsup
-    features: ["timestamp", "jumpsup"]
-  nojump_model:
-    source: nojump
-    features: ["timestamp", "nojump"]
+  trio_model:
+    sources: ["jumpsdown", "jumpsup", "nojump"]
+    features: ["timestamp", "jumpsdown", "jumpsup", "nojump"]
+  # jumpsdown_model:
+  #   source: jumpsdown
+  #   features: ["timestamp", "jumpsdown"]
+  # jumpsup_model:
+  #   source: jumpsup
+  #   features: ["timestamp", "jumpsup"]
+  # nojump_model:
+  #   source: nojump
+  #   features: ["timestamp", "nojump"]
 
 
 data:
@@ -91,7 +94,7 @@ data:
 decision:
   threshold: 0.40
   method: kofn_window
-  k: 2
+  k: 1  #2
   window:
     size: 12          # number of steps (simple, matches your current loop)
     per_model_hits: 1 # m in "N-of-W" (optional; default 1)

@@ -2,6 +2,7 @@
 
 import yaml
 from pathlib import Path
+from typing import Any, Dict, List
 
 from htm_monitor.htm_src.feature import Feature
 from htm_monitor.htm_src.htm_model import HTMmodel
@@ -19,16 +20,41 @@ def merge_dicts(a: dict, b: dict) -> dict:
     return out
 
 
+def _model_sources(model_name: str, model_cfg: dict) -> List[str]:
+    """
+    Normalize per-model source config.
+    Exactly one of:
+      - source: str
+      - sources: list[str]
+    """
+    has_source = "source" in model_cfg
+    has_sources = "sources" in model_cfg
+    if has_source == has_sources:
+        raise ValueError(
+            f"Model '{model_name}' must specify exactly one of: 'source' or 'sources'"
+        )
+    if has_source:
+        src = model_cfg.get("source")
+        if not isinstance(src, str) or not src:
+            raise ValueError(f"Model '{model_name}' key 'source' must be a non-empty string")
+        return [src]
+
+    srcs = model_cfg.get("sources")
+    if not isinstance(srcs, list) or not srcs:
+        raise ValueError(f"Model '{model_name}' key 'sources' must be a non-empty list[str]")
+    out: List[str] = []
+    for s in srcs:
+        if not isinstance(s, str) or not s:
+            raise ValueError(f"Model '{model_name}' key 'sources' entries must be non-empty strings")
+        out.append(s)
+    return out
+
+
 def build_from_config(defaults_path: str, user_path: str):
     defaults = load_yaml(defaults_path)
     user = load_yaml(user_path)
 
     cfg = merge_dicts(defaults, user)
-
-    # strict + simple: every model must declare its source
-    for model_name, model_cfg in cfg["models"].items():
-        if "source" not in model_cfg:
-            raise ValueError(f"Model '{model_name}' missing required key: source")
 
     # ---- Build Features ----
     features = {
@@ -40,6 +66,8 @@ def build_from_config(defaults_path: str, user_path: str):
     models = {}
     model_sources = {}
     for model_name, model_cfg in cfg["models"].items():
+        srcs = _model_sources(model_name, model_cfg)
+
         model_features = {
             fname: features[fname]
             for fname in model_cfg["features"]
@@ -50,9 +78,10 @@ def build_from_config(defaults_path: str, user_path: str):
             models_params=cfg["htm_params"],
             return_pred_count=False,
         )
-        model_sources[model_name] = model_cfg["source"]
+        model_sources[model_name] = srcs
 
-    engine = Engine(models, model_sources)
+    on_missing = (cfg.get("data", {}).get("timebase", {}).get("on_missing") or "skip").lower()
+    engine = Engine(models, model_sources, on_missing=on_missing)
 
     dcfg = cfg["decision"]
 

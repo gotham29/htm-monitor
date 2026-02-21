@@ -178,20 +178,6 @@ def _ts_any(rows_by_source: Mapping[str, Mapping[str, Any]]) -> Optional[str]:
     return None
 
 
-def _value_for_model(
-    rows_by_source: Mapping[str, Mapping[str, Any]],
-    model_source: str,
-    value_field: Optional[str],
-) -> Optional[float]:
-    if not value_field:
-        return None
-    row = rows_by_source.get(model_source)
-    if not row:
-        return None
-    v = row.get(value_field)
-    return float(v) if isinstance(v, (int, float)) else None
-
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--defaults", required=True)
@@ -201,15 +187,23 @@ def main() -> None:
 
     cfg, engine, decision = build_from_config(args.defaults, args.config)
 
-    # strict + simple: every model must declare its source (config enforces, but keep local mapping handy)
-    model_sources: Dict[str, str] = {}
-    model_value_fields: Dict[str, Optional[str]] = {}
+    # model_sources normalized by build_from_config: model -> list[sources]
+    model_sources: Dict[str, List[str]] = {}
+    model_value_fields: Dict[str, List[str]] = {}
     for model_name, mcfg in (cfg.get("models") or {}).items():
-        src = mcfg.get("source")
-        if not src:
-            raise ValueError(f"Model '{model_name}' missing required key: source")
-        model_sources[model_name] = str(src)
-        model_value_fields[model_name] = _model_value_field(mcfg.get("features") or [])
+        if "source" in mcfg:
+            model_sources[model_name] = [str(mcfg["source"])]
+        elif "sources" in mcfg:
+            srcs = mcfg.get("sources")
+            if not isinstance(srcs, list) or not srcs:
+                raise ValueError(f"Model '{model_name}' key 'sources' must be a non-empty list[str]")
+            model_sources[model_name] = [str(s) for s in srcs]
+        else:
+            raise ValueError(f"Model '{model_name}' must specify 'source' or 'sources'")
+
+        # All non-timestamp features for this model (used only for plotting)
+        feats = list(mcfg.get("features") or [])
+        model_value_fields[model_name] = [f for f in feats if f != "timestamp"]
 
     sources = _load_sources(cfg)
     iters = {name: _csv_events(sc) for name, sc in sources.items()}
@@ -242,30 +236,41 @@ def main() -> None:
         def on_update(t, rows_by_source, model_outputs, result):
             # ----- Plot (generic) -----
             if plot is not None:
-                # Build a plot payload that is model-aware (multi-signal), while keeping backward-compat 'value'.
-                values_by_model: Dict[str, Optional[float]] = {}
+                # Build a plot payload:
+                # values_by_model: model -> {feature -> value}
+                values_by_model: Dict[str, Dict[str, Optional[float]]] = {}
                 for model_name in model_outputs.keys():
-                    src = model_sources.get(model_name)
-                    vf = model_value_fields.get(model_name)
-                    if not src:
-                        values_by_model[model_name] = None
-                        continue
-                    values_by_model[model_name] = _value_for_model(rows_by_source, src, vf)
+                    feats = model_value_fields.get(model_name) or []
+                    srcs = model_sources.get(model_name) or []
+                    per_feat: Dict[str, Optional[float]] = {}
+
+                    for f in feats:
+                        v: Optional[float] = None
+                        for s in srcs:
+                            r = rows_by_source.get(s)
+                            if isinstance(r, Mapping) and r.get(f) is not None:
+                                rv = r.get(f)
+                                v = float(rv) if isinstance(rv, (int, float)) else None
+                                break
+                        per_feat[f] = v
+
+                    values_by_model[model_name] = per_feat
 
                 # Ground truth per model (derived from the model's source labels)
                 gt_by_model: Optional[Dict[str, set]] = None
                 if gt_by_source:
                     gt_by_model = {}
-                    for model_name, src in model_sources.items():
-                        sgt = gt_by_source.get(src)
-                        if sgt:
-                            gt_by_model[model_name] = sgt
+                    for model_name, srcs in model_sources.items():
+                        acc: Set[str] = set()
+                        for s in srcs:
+                            sgt = gt_by_source.get(s)
+                            if sgt:
+                                acc.update(sgt)
+                        if acc:
+                            gt_by_model[model_name] = acc
 
                 plot_row: Dict[str, Any] = {
                     "timestamp": _ts_any(rows_by_source),
-                    # keep old LivePlot working for now:
-                    "value": next((v for v in values_by_model.values() if v is not None), None),
-                    # new (used by next live_plot diff):
                     "values_by_model": values_by_model,
                     "gt_by_model": gt_by_model,
                 }

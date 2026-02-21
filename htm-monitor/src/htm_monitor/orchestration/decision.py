@@ -16,9 +16,24 @@ class Decision:
         window_size: int = 1,
         per_model_hits: int = 1,
     ):
-        self.threshold = threshold
-        self.method = method
-        self.k = k
+        # ---- Basic validation / normalization (airtight) ----
+        if not isinstance(threshold, numbers.Real):
+            raise ValueError("threshold must be a real number")
+        self.threshold = float(threshold)
+
+        self.method = str(method).lower()
+        allowed = {"max", "mean", "kofn", "kofn_window"}
+        if self.method not in allowed:
+            raise ValueError(
+                f"Unknown Decision.method: {method}. Must be one of: {sorted(allowed)}"
+            )
+
+        if k is not None:
+            if not isinstance(k, numbers.Integral):
+                raise ValueError("k must be an int when provided")
+            if int(k) <= 0:
+                raise ValueError("k must be > 0")
+        self.k = int(k) if k is not None else None
         self.window_size = int(window_size)
         self.per_model_hits = int(per_model_hits)
 

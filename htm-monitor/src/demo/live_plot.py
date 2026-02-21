@@ -26,7 +26,9 @@ class LivePlot:
 
         # per-model series
         self._model_names: List[str] = []
-        self._val: Dict[str, Deque[float]] = {}
+        # values: model -> feature -> series
+        self._val: Dict[str, Dict[str, Deque[float]]] = {}
+        self._val_features: Dict[str, List[str]] = {}
         self._raw: Dict[str, Deque[float]] = {}
         self._lik: Dict[str, Deque[float]] = {}
         self._gt: Dict[str, Deque[float]] = {}  # 0/1 per timestep (within window)
@@ -39,7 +41,8 @@ class LivePlot:
         self._ax_sys = None
         self._ax_spacer = None
 
-        self._l_val: Dict[str, Any] = {}
+        # line handles: model -> feature -> line
+        self._l_val: Dict[str, Dict[str, Any]] = {}
         self._l_raw: Dict[str, Any] = {}
         self._l_lik: Dict[str, Any] = {}
         self._thr_line: Dict[str, Any] = {}
@@ -57,13 +60,17 @@ class LivePlot:
         # styles (single source of truth)
         self._gt_style = dict(color="purple", linewidth=2.5, alpha=0.75, linestyle=":")
         self._hot_span_style = dict(alpha=0.18, linewidth=0)  # very light highlight
+        # keep values visually distinct from raw/likelihood (blue/orange)
+        self._value_colors = ["black", "dimgray", "gray", "slategray"]
 
         plt.ion()
 
     def _init_model_series(self, model_names: List[str]) -> None:
         self._model_names = list(model_names)
         for m in self._model_names:
-            self._val[m] = deque(maxlen=self.window)
+            self._val[m] = {}
+            self._val_features[m] = []
+            self._l_val[m] = {}
             self._raw[m] = deque(maxlen=self.window)
             self._lik[m] = deque(maxlen=self.window)
             self._gt[m] = deque(maxlen=self.window)
@@ -141,10 +148,9 @@ class LivePlot:
             self._axes_val[m] = axv
             self._axes_anom[m] = axa
 
-            (lv,) = axv.plot([], [], label="value", color="black")
+            # value lines are created lazily once we see feature names
             (lr,) = axa.plot([], [], label="raw")              # default blue
             (ll,) = axa.plot([], [], label="likelihood")       # default orange
-            self._l_val[m] = lv
             self._l_raw[m] = lr
             self._l_lik[m] = ll
 
@@ -180,8 +186,9 @@ class LivePlot:
         self._fig.suptitle("HTM Monitor (live)", y=0.995)
 
         # Single global legend (clean, non-crowded)
-        handles = [lv, lr, ll, self._sys_line]
-        labels = ["value", "raw anomaly", "anomaly likelihood", "system alert"]
+        # We add a representative "value(s)" handle later once value lines exist.
+        handles = [lr, ll, self._sys_line]
+        labels = ["raw anomaly", "anomaly likelihood", "system alert"]
         self._legend = self._fig.legend(handles, labels, loc="upper right")
 
     def update(
@@ -218,12 +225,10 @@ class LivePlot:
             self._hot_spans.clear()
             self._build_layout(model_names)
 
-        # multi-model values provided by run_pipeline.py (preferred)
+        # values_by_model: model -> {feature -> value}
         values_by_model = row.get("values_by_model")
         if not isinstance(values_by_model, Mapping):
-            # backward compat: treat row["value"] as the first model's value
-            first = next(iter(model_outputs.keys()))
-            values_by_model = {first: row.get("value")}
+            raise ValueError("LivePlot expects row['values_by_model'] as model -> {feature -> value}")
 
         ts = row.get(self.timestamp_key)
         gt_by_model = row.get("gt_by_model")
@@ -240,8 +245,40 @@ class LivePlot:
 
         # append one point per model (NaN for missing => gaps)
         for m, out in model_outputs.items():
-            v = values_by_model.get(m)
-            v_f = float(v) if isinstance(v, numbers.Real) else float("nan")
+            vmap = values_by_model.get(m)
+            if not isinstance(vmap, Mapping):
+                vmap = {}
+
+            # Lazily initialize per-feature series + line handles once we see features
+            feat_names = list(vmap.keys())
+            if self._val_features.get(m) != feat_names:
+                # If features change (rare), rebuild figure (keep it simple + correct)
+                if self._val_features.get(m) and self._val_features[m] != feat_names:
+                    plt.close(self._fig)
+                    self._t.clear()
+                    self._alert.clear()
+                    self._val.clear()
+                    self._val_features.clear()
+                    self._raw.clear()
+                    self._lik.clear()
+                    self._gt.clear()
+                    self._hot.clear()
+                    self._axes_val.clear()
+                    self._axes_anom.clear()
+                    self._l_val.clear()
+                    self._l_raw.clear()
+                    self._l_lik.clear()
+                    self._thr_line.clear()
+                    self._gt_lines.clear()
+                    self._hot_spans.clear()
+                    self._build_layout(model_names)
+                self._val_features[m] = feat_names
+                for f in feat_names:
+                    if f not in self._val[m]:
+                        self._val[m][f] = deque(maxlen=self.window)
+                        c = self._value_colors[len(self._l_val[m]) % len(self._value_colors)]
+                        (ln,) = self._axes_val[m].plot([], [], label="_nolegend_", color=c)
+                        self._l_val[m][f] = ln
 
             raw = out.get("raw")
             lik = out.get("likelihood")
@@ -254,7 +291,11 @@ class LivePlot:
             else:
                 gt_flag = bool(self.gt_timestamps is not None and ts is not None and ts in self.gt_timestamps)
 
-            self._val[m].append(v_f)
+            # append per-feature values
+            for f in self._val_features.get(m, []):
+                vv = vmap.get(f)
+                v_f = float(vv) if isinstance(vv, numbers.Real) else float("nan")
+                self._val[m][f].append(v_f)
             self._raw[m].append(raw_f)
             self._lik[m].append(lik_f)
             self._gt[m].append(1.0 if gt_flag else 0.0)
@@ -284,7 +325,11 @@ class LivePlot:
             axv = self._axes_val[m]
             axa = self._axes_anom[m]
 
-            self._l_val[m].set_data(xs, list(self._val[m]))
+            # value lines (multi-signal)
+            for f in self._val_features.get(m, []):
+                ln = self._l_val[m].get(f)
+                if ln is not None:
+                    ln.set_data(xs, list(self._val[m][f]))
             self._l_raw[m].set_data(xs, list(self._raw[m]))
             self._l_lik[m].set_data(xs, list(self._lik[m]))
 
@@ -311,6 +356,16 @@ class LivePlot:
             axa.relim()
             axa.autoscale_view()
             axa.set_ylim(0.0, 1.0)  # keep likelihood visually comparable
+
+        # Ensure legend includes a representative "value(s)" handle (once lines exist)
+        if self._legend is not None and self._model_names:
+            m0 = self._model_names[0]
+            any_val_line = next(iter(self._l_val.get(m0, {}).values()), None)
+            if any_val_line is not None:
+                handles = [any_val_line, self._l_raw[m0], self._l_lik[m0], self._sys_line]
+                labels = ["value(s)", "raw anomaly", "anomaly likelihood", "system alert"]
+                self._legend.remove()
+                self._legend = self._fig.legend(handles, labels, loc="upper right")
 
         # update system alert (filled band + step)
         ys = list(self._alert)
