@@ -1,0 +1,149 @@
+from dataclasses import dataclass
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
+
+from htm_monitor.orchestration.engine import Engine
+
+
+@dataclass
+class _StubModel:
+    """
+    Minimal stand-in for HTMmodel.
+    We only care that Engine passes the right merged features_data.
+    """
+    required_keys: Sequence[str]
+    calls: List[Dict[str, Any]]
+
+    def run(self, features_data: Mapping[str, Any], timestep: int, learn: bool):
+        # validate required keys exist and are not None
+        for k in self.required_keys:
+            assert k in features_data, f"missing key {k}"
+            assert features_data[k] is not None, f"{k} is None"
+
+        self.calls.append({"features_data": dict(features_data), "timestep": timestep, "learn": learn})
+
+        # raw, likelihood, pcount
+        return 0.1, 0.2, None
+
+
+def _as_list(x: Union[str, Sequence[str]]) -> List[str]:
+    return [x] if isinstance(x, str) else list(x)
+
+
+def test_engine_merges_across_multiple_sources_happy_path():
+    model = _StubModel(required_keys=["timestamp", "a", "b", "c"], calls=[])
+    models = {"trio_model": model}
+
+    # Engine implementation may store model_sources as str or list; pass list (multi-source case)
+    model_sources = {"trio_model": ["s1", "s2", "s3"]}
+    eng = Engine(models=models, model_sources=model_sources, on_missing="skip")
+
+    rows_by_source = {
+        "s1": {"timestamp": "t0", "a": 1.0},
+        "s2": {"timestamp": "t0", "b": 2.0},
+        "s3": {"timestamp": "t0", "c": 3.0},
+    }
+
+    out = eng.step(rows_by_source, timestep=0)
+    assert "trio_model" in out
+    assert len(model.calls) == 1
+    merged = model.calls[0]["features_data"]
+    assert merged["timestamp"] == "t0"
+    assert merged["a"] == 1.0 and merged["b"] == 2.0 and merged["c"] == 3.0
+
+
+def test_engine_skip_when_required_feature_missing_under_union_timebase():
+    model = _StubModel(required_keys=["timestamp", "a", "b"], calls=[])
+    models = {"m": model}
+    eng = Engine(models=models, model_sources={"m": ["s1", "s2"]}, on_missing="skip")
+
+    # only s1 present at this timestep => missing b
+    rows_by_source = {"s1": {"timestamp": "t0", "a": 1.0}}
+    out = eng.step(rows_by_source, timestep=0)
+
+    assert out == {} or "m" not in out
+    assert len(model.calls) == 0
+
+
+def test_engine_handles_none_as_missing_and_can_take_value_from_other_source():
+    model = _StubModel(required_keys=["timestamp", "a"], calls=[])
+    models = {"m": model}
+    eng = Engine(models=models, model_sources={"m": ["s1", "s2"]}, on_missing="skip")
+
+    rows_by_source = {
+        "s1": {"timestamp": "t0", "a": None},
+        "s2": {"timestamp": "t0", "a": 123.0},
+    }
+    out = eng.step(rows_by_source, timestep=0)
+
+    assert "m" in out
+    assert len(model.calls) == 1
+    assert model.calls[0]["features_data"]["a"] == 123.0
+
+
+def test_engine_rejects_unknown_on_missing_mode():
+    model = _StubModel(required_keys=["timestamp", "a"], calls=[])
+    eng = Engine(models={"m": model}, model_sources={"m": ["s1"]}, on_missing="nope")
+
+    try:
+        eng.step({"s1": {"timestamp": "t0", "a": 1.0}}, timestep=0)
+        assert False, "Expected ValueError for unsupported on_missing mode"
+    except ValueError:
+        pass
+
+
+def test_engine_rejects_timestamp_mismatch_across_sources():
+    model = _StubModel(required_keys=["timestamp", "a", "b"], calls=[])
+    eng = Engine(models={"m": model}, model_sources={"m": ["s1", "s2"]}, on_missing="skip")
+
+    rows_by_source = {
+        "s1": {"timestamp": "t0", "a": 1.0},
+        "s2": {"timestamp": "t1", "b": 2.0},  # mismatch
+    }
+
+    try:
+        eng.step(rows_by_source, timestep=0)
+        assert False, "Expected ValueError for timestamp mismatch"
+    except ValueError:
+        pass
+
+
+def test_engine_hold_last_reuses_previous_values_but_keeps_current_timestamp():
+    model = _StubModel(required_keys=["timestamp", "a"], calls=[])
+    eng = Engine(models={"m": model}, model_sources={"m": ["s1"]}, on_missing="hold_last")
+
+    # t0: good row -> establish last_good
+    out0 = eng.step({"s1": {"timestamp": "t0", "a": 1.0}}, timestep=0)
+    assert "m" in out0
+    assert len(model.calls) == 1
+    assert model.calls[0]["features_data"] == {"timestamp": "t0", "a": 1.0}
+
+    # t1: missing a -> should still run using last_good 'a', but timestamp should be current
+    out1 = eng.step({"s1": {"timestamp": "t1", "a": None}}, timestep=1)
+    assert "m" in out1
+    assert len(model.calls) == 2
+    assert model.calls[1]["features_data"] == {"timestamp": "t1", "a": 1.0}
+
+
+def test_engine_raises_if_model_has_no_sources_configured():
+    model = _StubModel(required_keys=["timestamp", "a"], calls=[])
+    eng = Engine(models={"m": model}, model_sources={}, on_missing="skip")
+
+    try:
+        eng.step({"s1": {"timestamp": "t0", "a": 1.0}}, timestep=0)
+        assert False, "Expected ValueError when model has no sources configured"
+    except ValueError:
+        pass
+
+
+def test_engine_feature_precedence_respects_source_order_first_non_none_wins():
+    model = _StubModel(required_keys=["timestamp", "a"], calls=[])
+    eng = Engine(models={"m": model}, model_sources={"m": ["s1", "s2"]}, on_missing="skip")
+
+    rows_by_source = {
+        "s1": {"timestamp": "t0", "a": 111.0},
+        "s2": {"timestamp": "t0", "a": 222.0},
+    }
+    out = eng.step(rows_by_source, timestep=0)
+    assert "m" in out
+    assert len(model.calls) == 1
+    assert model.calls[0]["features_data"]["a"] == 111.0
