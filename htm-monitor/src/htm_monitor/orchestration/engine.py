@@ -1,7 +1,7 @@
 # src/htm_monitor/orchestration/engine.py
 
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Union
-
+import numbers
 from htm_monitor.htm_src.htm_model import HTMmodel
 
 
@@ -191,9 +191,36 @@ class Engine:
                 timestep=timestep,
                 learn=True,
             )
+
+            # ---- Optional HTMmodel-only metrics ----
+            # Unit tests use _StubModel (run-only). Real HTMmodel exposes:
+            #   last_anomaly_probability(), last_log_likelihood()
+            p_val: Optional[float] = None
+            ll_val: Optional[float] = None
+            get_p = getattr(model, "last_anomaly_probability", None)
+            if callable(get_p):
+                try:
+                    pv = get_p()
+                    if isinstance(pv, numbers.Real):
+                       p_val = float(pv)
+                except Exception:
+                    p_val = None
+
+            get_ll = getattr(model, "last_log_likelihood", None)
+            if callable(get_ll):
+                try:
+                    lv = get_ll()
+                    if isinstance(lv, numbers.Real):
+                        ll_val = float(lv)
+                except Exception:
+                    ll_val = None
+
             outputs[name] = {
                 "raw": raw,
-                "likelihood": likelihood,
+                "likelihood": likelihood,  # legacy: this is computeLogLikelihood(p)
+                "p": p_val,  # legacy short name (may be None for stub models)
+                "anomaly_probability": p_val,
+                "log_likelihood": ll_val,
                 "pcount": pcount,
             }
 

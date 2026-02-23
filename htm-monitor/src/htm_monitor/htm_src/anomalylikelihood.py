@@ -1,6 +1,7 @@
 import collections
 import math
 import numbers
+from typing import Any, Dict
 from abc import ABCMeta, abstractmethod
 
 import numpy as np
@@ -289,6 +290,32 @@ class AnomalyLikelihood(Serializable):
             self._probationaryPeriod,
             self._learningPeriod,
             self._reestimationPeriod) )
+
+
+    def debug_state(self) -> Dict[str, Any]:
+        """
+        Introspection helper for debugging warmup/probation behavior.
+        Does not affect likelihood math.
+        """
+        # NOTE: _iteration is incremented inside anomalyProbability()
+        iteration = int(getattr(self, "_iteration", 0))
+        learning_period = int(getattr(self, "_learningPeriod", 0))
+        probationary_period = int(getattr(self, "_probationaryPeriod", learning_period))
+        reestimation_period = int(getattr(self, "_reestimationPeriod", 0))
+        averaging_window = int(getattr(self, "_averagingWindow", 0))
+
+        hist = getattr(self, "_historicalScores", None)
+        historic_window_size = int(getattr(hist, "maxlen", 0) or 0)
+
+        return {
+            "iteration": iteration,
+            "learningPeriod": learning_period,
+            "probationaryPeriod": probationary_period,
+            "inProbation": bool(iteration < probationary_period),
+            "reestimationPeriod": reestimation_period,
+            "historicWindowSize": historic_window_size,
+            "averagingWindow": averaging_window,
+        }
 
 
     @staticmethod

@@ -1,5 +1,6 @@
 import math
 import logging
+from typing import Tuple
 from typing import Mapping, Union, Any, Dict, Optional
 
 import numpy as np
@@ -17,9 +18,13 @@ class HTMmodel:
     def __init__(self,
                  features: Mapping[str, Feature],
                  models_params: dict,
-                 return_pred_count: bool = False):
+                 return_pred_count: bool = False,
+                 name: Optional[str] = None):
 
         self.iteration_ = 0
+        self.name = str(name) if name is not None else None
+        self._last_al_p: Optional[float] = None
+        self._last_al_log: Optional[float] = None
         self.features = features
         self.models_params = models_params
         self.return_pred_count = bool(return_pred_count)
@@ -192,7 +197,32 @@ class HTMmodel:
             averagingWindow=averaging_window,
         )
 
-    def get_alikelihood(self, value, anomaly_score, timestamp) -> float:
+    def _likelihood_value_feature(self) -> Optional[str]:
+        """
+        Select a stable, non-timestamp feature name to pass as `value` into
+        AnomalyLikelihood.anomalyProbability(...).
+
+        - If there is exactly one non-time feature, use it.
+        - Otherwise, choose the first non-time feature (deterministic based on Feature order).
+        - If no non-time features exist, return None.
+        """
+        _, non_time_feature_names = separate_time_and_rest(self.features.values())
+        if len(non_time_feature_names) == 0:
+            return None
+        if len(non_time_feature_names) == 1:
+            return non_time_feature_names[0]
+        # Multi-feature model: pick the first non-time feature deterministically
+        return non_time_feature_names[0]
+
+    def get_alikelihood(
+        self,
+        value: float,
+        anomaly_score: float,
+        timestamp,
+        *,
+        timestep: Optional[int] = None,
+        log_every: int = 200,
+    ) -> float:
         """
         Purpose:
             Return anomaly likelihood for given input data point
@@ -211,9 +241,38 @@ class HTMmodel:
                 type: float
                 meaning: likelihood value (used to classify data as anomalous or not)
         """
-        anomalyScore = self.al.anomalyProbability(value, anomaly_score, timestamp)
-        logScore = self.al.computeLogLikelihood(anomalyScore)
-        return logScore
+        p = self.al.anomalyProbability(value, anomaly_score, timestamp)
+        log_score = self.al.computeLogLikelihood(p)
+        self._last_al_p = float(p)
+        self._last_al_log = float(log_score)
+
+        # Sparse debug trace (does not change outputs)
+        if (
+            timestep is not None
+            and isinstance(log_every, int)
+            and log_every > 0
+            and (timestep % log_every) == 0
+        ):
+            st = self.al.debug_state() if hasattr(self.al, "debug_state") else {}
+            log.info(
+                "AL_TRACE model=%s t=%s ts=%s value=%s raw=%s p=%s log=%s state=%s",
+                (self.name or "?"),
+                timestep,
+                timestamp,
+                value,
+                anomaly_score,
+                p,
+                log_score,
+                st,
+            )
+
+        return log_score
+
+    def last_anomaly_probability(self) -> Optional[float]:
+        return self._last_al_p
+
+    def last_log_likelihood(self) -> Optional[float]:
+        return self._last_al_log
 
     def get_single_feature_name(self) -> Union[None, str]:
         """
@@ -330,13 +389,19 @@ class HTMmodel:
         self.tm.compute(active_columns, learn=learn)
         # Get anomaly metrics
         anomaly_score = self.tm.anomaly
-        # Choose feature for value arg
-        f1 = self.single_feature if self.single_feature else self.feature_names[0]
+        # Choose feature for AnomalyLikelihood.value (never use timestamp)
+        f1 = self._likelihood_value_feature()
         # Get timestamp data if available
         timestamp = features_data[self.feature_timestamp] if self.feature_timestamp else self.iteration_
-        anomaly_likelihood = self.get_alikelihood(value=features_data[f1],
-                                                  timestamp=timestamp,
-                                                  anomaly_score=anomaly_score)
+        if f1 is None:
+            raise ValueError("No non-timestamp feature available for anomaly likelihood value")
+
+        anomaly_likelihood = self.get_alikelihood(
+            value=features_data[f1],
+            timestamp=timestamp,
+            anomaly_score=anomaly_score,
+            timestep=timestep,
+        )
 
         # Ensure pred_count > 0 when anomaly_score < 1.0
         if anomaly_score < 1.0 and pred_count == 0:
