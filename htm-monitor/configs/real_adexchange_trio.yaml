@@ -1,0 +1,114 @@
+features:
+  timestamp:
+    type: datetime
+    format: "%Y-%m-%d %H:%M:%S"
+    # DateEncoder: at least one of these must be > 0, or htm.core asserts size > 0
+    timeOfDay: 21
+    weekend: 0
+    dayOfWeek: 0
+    holiday: 0
+    season: 0
+
+  # Three real signals (RDSE params kept collision-safe)
+  cpc3:
+    type: float
+    size: 2048  #512
+    activeBits: 40  #21
+    numBuckets: 130
+    minVal: 0.06
+    maxVal: 0.38
+    seed: 42
+
+  cpc4:
+    type: float
+    size: 2048  #512
+    activeBits: 40  #21
+    numBuckets: 130
+    minVal: 0.03
+    maxVal: 0.25
+    seed: 43
+
+  cpm4:
+    type: float
+    size: 2048  #512
+    activeBits: 40  #21
+    numBuckets: 130
+    minVal: 0.17
+    maxVal: 1.55
+    seed: 44
+
+models:
+  cpc3_model:
+    sources: ["cpc3"]
+    features: ["timestamp", "cpc3"]
+
+  cpc4_model:
+    sources: ["cpc4"]
+    features: ["timestamp", "cpc4"]
+
+  cpm4_model:
+    sources: ["cpm4"]
+    features: ["timestamp", "cpm4"]
+
+data:
+  timebase:
+    # For multi-signal fusion, intersection is the cleanest story (aligned timestamps).
+    mode: union  #intersection
+    on_missing: hold_last  #skip
+
+  sources:
+    - name: cpc3
+      kind: csv
+      # Update this if your NAB folder differs; using the "same dir as the others" convention.
+      path: /Users/samheiserman/Desktop/datasets/NAB/realAdExchange/realAdExchange/exchange-3_cpc_results.csv
+      timestamp_col: timestamp
+      timestamp_format: "%Y-%m-%d %H:%M:%S"
+      fields:
+        cpc3: value
+      labels:
+        timestamps:
+          - "2011-07-14 10:15:01"
+          - "2011-07-20 10:15:01"
+          - "2011-08-13 10:15:01"
+
+    - name: cpc4
+      kind: csv
+      path: /Users/samheiserman/Desktop/datasets/NAB/realAdExchange/realAdExchange/exchange-4_cpc_results.csv
+      timestamp_col: timestamp
+      timestamp_format: "%Y-%m-%d %H:%M:%S"
+      fields:
+        cpc4: value
+      labels:
+        timestamps:
+          - "2011-07-16 09:15:01"
+          - "2011-08-02 12:15:01"
+          - "2011-08-23 08:15:01"
+
+    - name: cpm4
+      kind: csv
+      path: /Users/samheiserman/Desktop/datasets/NAB/realAdExchange/realAdExchange/exchange-4_cpm_results.csv
+      timestamp_col: timestamp
+      timestamp_format: "%Y-%m-%d %H:%M:%S"
+      fields:
+        cpm4: value
+      labels:
+        timestamps:
+          - "2011-07-16 09:15:01"
+          - "2011-08-01 07:15:01"
+          - "2011-08-23 08:15:01"
+          - "2011-08-28 13:15:01"
+
+decision:
+  score_key: anomaly_probability  #likelihood
+  threshold: 0.99  #0.25
+  method: kofn_window
+  k: 2
+  window:
+    size: 12  #24
+    per_model_hits: 2
+
+plot:
+  enable: true
+  step_pause_s: 0.01
+  window: 1000
+  show_ground_truth: true
