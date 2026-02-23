@@ -3,6 +3,7 @@
 import argparse
 import csv
 import time
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -178,12 +179,34 @@ def _ts_any(rows_by_source: Mapping[str, Mapping[str, Any]]) -> Optional[str]:
     return None
 
 
+def _configure_logging(level: str, log_file: Optional[str]) -> None:
+    lvl = getattr(logging, (level or "INFO").upper(), None)
+    if not isinstance(lvl, int):
+        raise ValueError(f"Invalid --log-level '{level}'. Try INFO, WARNING, DEBUG.")
+
+    handlers = []
+    # Always log to console so you can see traces interactively.
+    handlers.append(logging.StreamHandler())
+    if log_file:
+        handlers.append(logging.FileHandler(log_file, mode="w"))
+
+    logging.basicConfig(
+        level=lvl,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=handlers,
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--defaults", required=True)
     ap.add_argument("--config", required=True)
     ap.add_argument("--out", default="outputs/out.csv")
+    ap.add_argument("--log-level", default="INFO")
+    ap.add_argument("--log-file", default=None)
     args = ap.parse_args()
+
+    _configure_logging(args.log_level, args.log_file)
 
     cfg, engine, decision = build_from_config(args.defaults, args.config)
 
@@ -229,7 +252,12 @@ def main() -> None:
     with open(outp, "w", newline="") as g:
         w = csv.DictWriter(
             g,
-            fieldnames=["t", "timestamp", "model", "raw", "likelihood", "system_score", "alert"],
+            fieldnames=[
+                "t", "timestamp", "model",
+                "raw", "p", "likelihood",
+                "system_score", "alert",
+                "hot_by_model",
+            ],
         )
         w.writeheader()
 
@@ -280,6 +308,7 @@ def main() -> None:
 
             sys_score = result.get("system_score") if isinstance(result, dict) else None
             alert = result.get("alert") if isinstance(result, dict) else None
+            hot_by_model = result.get("hot_by_model") if isinstance(result, dict) else None
             # write one line per model output
             ts_any = _ts_any(rows_by_source)
             for model_name, out in model_outputs.items():
@@ -289,9 +318,11 @@ def main() -> None:
                         "timestamp": ts_any,
                         "model": model_name,
                         "raw": out.get("raw"),
+                        "p": out.get("p"),
                         "likelihood": out.get("likelihood"),
                         "system_score": sys_score,
                         "alert": alert,
+                        "hot_by_model": hot_by_model,
                     }
                 )
 

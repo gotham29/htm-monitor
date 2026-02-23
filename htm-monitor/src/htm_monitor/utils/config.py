@@ -77,6 +77,7 @@ def build_from_config(defaults_path: str, user_path: str):
             features=model_features,
             models_params=cfg["htm_params"],
             return_pred_count=False,
+            name=model_name,
         )
         model_sources[model_name] = srcs
 
@@ -101,6 +102,7 @@ def build_from_config(defaults_path: str, user_path: str):
         k=dcfg.get("k"),
         window_size=window_size,
         per_model_hits=per_model_hits,
+        score_key=str(dcfg.get("score_key", "likelihood")),
     )
 
     return cfg, engine, decision

@@ -15,11 +15,15 @@ class Decision:
         k: Optional[int] = None,
         window_size: int = 1,
         per_model_hits: int = 1,
+        score_key: str = "likelihood",
     ):
         # ---- Basic validation / normalization (airtight) ----
         if not isinstance(threshold, numbers.Real):
             raise ValueError("threshold must be a real number")
         self.threshold = float(threshold)
+        if not isinstance(score_key, str) or not score_key:
+            raise ValueError("score_key must be a non-empty string")
+        self.score_key = score_key
 
         self.method = str(method).lower()
         allowed = {"max", "mean", "kofn", "kofn_window"}
@@ -71,7 +75,7 @@ class Decision:
         hot_by_model: Dict[str, bool] = {}
         for name, out in model_outputs.items():
             self._ensure_model(name)
-            lik = out.get("likelihood")
+            lik = out.get(self.score_key)
             is_hit = bool(isinstance(lik, numbers.Real) and lik >= self.threshold)
             self._hit_windows[name].append(is_hit)
 
@@ -90,22 +94,26 @@ class Decision:
         if self.method == "kofn_window":
             return self._kofn_window(model_outputs)
 
-        likelihoods = [m["likelihood"] for m in model_outputs.values() if "likelihood" in m]
+        vals = [
+            m.get(self.score_key)
+            for m in model_outputs.values()
+            if isinstance(m.get(self.score_key), numbers.Real)
+        ]
 
-        if not likelihoods:
+        if not vals:
             return {"system_score": 0.0, "alert": False}
 
         if self.method == "mean":
-            system_score = sum(likelihoods) / len(likelihoods)
+            system_score = sum(vals) / len(vals)
             alert = system_score >= self.threshold
         elif self.method == "kofn":
             if self.k is None:
                 raise ValueError("Decision(method='kofn') requires k")
-            count = sum(1 for x in likelihoods if x >= self.threshold)
-            system_score = float(count) / float(len(likelihoods))
+            count = sum(1 for x in vals if x >= self.threshold)
+            system_score = float(count) / float(len(vals))
             alert = count >= int(self.k)
         else:  # default max
-            system_score = max(likelihoods)
+            system_score = max(vals)
 
             alert = system_score >= self.threshold
 
