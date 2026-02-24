@@ -162,6 +162,26 @@ def test_engine_feature_precedence_respects_source_order_first_non_none_wins():
     assert model.calls[0]["features_data"]["a"] == 111.0
 
 
+def test_engine_union_hold_last_allows_model_missing_row_if_system_timestamp_exists():
+    """
+    Under union timebase, rows_by_source at a timestep may include only some sources.
+    With on_missing=hold_last, a model whose source is absent should still run using last_good,
+    but MUST advance timestamp to the current system timestamp from other sources.
+    """
+    model = _StubModel(required_keys=["timestamp", "a"], calls=[])
+    eng = Engine(models={"m": model}, model_sources={"m": ["s1"]}, on_missing="hold_last")
+
+    # t0: establish last_good from s1
+    out0 = eng.step({"s1": {"timestamp": "t0", "a": 1.0}}, timestep=0)
+    assert "m" in out0
+    assert model.calls[0]["features_data"] == {"timestamp": "t0", "a": 1.0}
+
+    # t1: s1 missing entirely, but system timestamp exists via s2
+    out1 = eng.step({"s2": {"timestamp": "t1", "b": 999.0}}, timestep=1)
+    assert "m" in out1
+    assert model.calls[1]["features_data"] == {"timestamp": "t1", "a": 1.0}
+
+
 def test_engine_hold_last_rejects_when_timestamp_missing_everywhere():
     model = _StubModel(required_keys=["timestamp", "a"], calls=[])
     eng = Engine(models={"m": model}, model_sources={"m": ["s1"]}, on_missing="hold_last")
@@ -187,3 +207,80 @@ def test_engine_output_schema_has_expected_keys():
         assert k in m
     assert isinstance(m["raw"], float)
     assert isinstance(m["likelihood"], float)
+
+
+def test_engine_hold_last_uses_global_timestamp_when_model_sources_missing():
+    model = _StubModel(required_keys=["timestamp", "a"], calls=[])
+    # model reads from s1, but at t1 only s2 arrives (union timebase behavior)
+    eng = Engine(models={"m": model}, model_sources={"m": ["s1"]}, on_missing="hold_last")
+
+    # t0: establish last_good from s1
+    out0 = eng.step({"s1": {"timestamp": "t0", "a": 1.0}}, timestep=0)
+    assert "m" in out0
+    assert model.calls[-1]["features_data"] == {"timestamp": "t0", "a": 1.0}
+
+    # t1: s1 missing entirely, but some other source supplies the timestep timestamp
+    out1 = eng.step({"s2": {"timestamp": "t1", "zzz": 999}}, timestep=1)
+    assert "m" in out1
+    assert model.calls[-1]["features_data"] == {"timestamp": "t1", "a": 1.0}
+
+
+def test_engine_hold_last_raises_when_timestamp_missing_everywhere():
+    model = _StubModel(required_keys=["timestamp", "a"], calls=[])
+    eng = Engine(models={"m": model}, model_sources={"m": ["s1"]}, on_missing="hold_last")
+
+    # establish last_good
+    eng.step({"s1": {"timestamp": "t0", "a": 1.0}}, timestep=0)
+
+    # next timestep: no timestamps anywhere -> strict failure
+    try:
+        eng.step({"s2": {"not_timestamp": "x"}}, timestep=1)
+        assert False, "Expected ValueError when timestamp missing everywhere"
+    except ValueError:
+        pass
+
+
+def test_engine_hold_last_skips_model_when_model_sources_missing_entirely_but_system_has_timestamp():
+    """
+    Union timebase: timestep emits only the sources that have a row at that time.
+    If a model's sources are absent in this timestep, Engine should NOT raise,
+    even in hold_last mode, as long as the timestep has a well-defined system timestamp.
+    It should reuse last_good for that model (including timestamp overwrite to current)
+    only if it can infer the current timestep timestamp from other sources.
+    """
+    model = _StubModel(required_keys=["timestamp", "a"], calls=[])
+    eng = Engine(models={"m": model}, model_sources={"m": ["s1"]}, on_missing="hold_last")
+
+    # t0: establish last_good
+    out0 = eng.step({"s1": {"timestamp": "t0", "a": 1.0}}, timestep=0)
+    assert "m" in out0
+    assert model.calls[-1]["features_data"] == {"timestamp": "t0", "a": 1.0}
+
+    # t1: model source s1 missing entirely, but another source carries the system timestamp
+    out1 = eng.step({"other": {"timestamp": "t1", "x": 999.0}}, timestep=1)
+
+    # Should run m using last_good values but current system timestamp
+    assert "m" in out1
+    assert model.calls[-1]["features_data"] == {"timestamp": "t1", "a": 1.0}
+
+
+def test_engine_raises_if_multiple_timestamps_appear_in_one_union_timestep():
+    """
+    If the union stream ever emits a timestep containing multiple different timestamps,
+    that's an invariant violation and must raise (air-tight).
+    """
+    model = _StubModel(required_keys=["timestamp", "a"], calls=[])
+    eng = Engine(models={"m": model}, model_sources={"m": ["s1"]}, on_missing="hold_last")
+
+    # even if m isn't involved, the timestep itself is inconsistent
+    try:
+        eng.step(
+            {
+                "s1": {"timestamp": "t0", "a": 1.0},
+                "s2": {"timestamp": "t1", "b": 2.0},
+            },
+            timestep=0,
+        )
+        assert False, "Expected ValueError for multiple timestamps in same timestep"
+    except ValueError:
+        pass
