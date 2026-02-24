@@ -1,0 +1,70 @@
+features:
+  timestamp:
+    type: datetime
+    format: '%Y-%m-%d %H:%M:%S'
+    timeOfDay: 21
+    weekend: 0
+    dayOfWeek: 0
+    holiday: 0
+    season: 0
+  occupancy_t4013:
+    type: float
+    size: 2048
+    activeBits: 40
+    numBuckets: 130
+    minVal: 0.10311700000000457
+    maxVal: 20.13298299999985
+    seed: 42
+  speed_t4013:
+    type: float
+    size: 2048
+    activeBits: 40
+    numBuckets: 130
+    minVal: 39.946400000000004
+    maxVal: 72.9336
+    seed: 43
+models:
+  occupancy_t4013_model:
+    sources:
+    - occupancy
+    features:
+    - timestamp
+    - occupancy_t4013
+  speed_t4013_model:
+    sources:
+    - speed
+    features:
+    - timestamp
+    - speed_t4013
+data:
+  timebase:
+    mode: union
+    on_missing: hold_last
+  sources:
+  - name: occupancy
+    kind: csv
+    path: /Users/samheiserman/Desktop/datasets/NAB/realTraffic/realTraffic/occupancy_t4013.csv
+    timestamp_col: timestamp
+    timestamp_format: '%Y-%m-%d %H:%M:%S'
+    fields:
+      occupancy_t4013: value
+  - name: speed
+    kind: csv
+    path: /Users/samheiserman/Desktop/datasets/NAB/realTraffic/realTraffic/speed_t4013.csv
+    timestamp_col: timestamp
+    timestamp_format: '%Y-%m-%d %H:%M:%S'
+    fields:
+      speed_t4013: value
+decision:
+  score_key: anomaly_probability
+  threshold: 0.997
+  method: kofn_window
+  k: 2
+  window:
+    size: 24
+    per_model_hits: 2
+plot:
+  enable: true
+  step_pause_s: 0.01
+  window: 1000
+  show_ground_truth: true

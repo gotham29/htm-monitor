@@ -1,5 +1,9 @@
+# tests/test_engine_multisource_merge.py
+
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
+
+import pytest
 
 from htm_monitor.orchestration.engine import Engine
 
@@ -23,10 +27,6 @@ class _StubModel:
 
         # raw, likelihood, pcount
         return 0.1, 0.2, None
-
-
-def _as_list(x: Union[str, Sequence[str]]) -> List[str]:
-    return [x] if isinstance(x, str) else list(x)
 
 
 def test_engine_merges_across_multiple_sources_happy_path():
@@ -124,6 +124,19 @@ def test_engine_hold_last_reuses_previous_values_but_keeps_current_timestamp():
     assert model.calls[1]["features_data"] == {"timestamp": "t1", "a": 1.0}
 
 
+def test_engine_hold_last_raises_if_timestamp_missing_everywhere():
+    model = _StubModel(required_keys=["timestamp", "a"], calls=[])
+    eng = Engine(models={"m": model}, model_sources={"m": ["s1"]}, on_missing="hold_last")
+
+    # establish last_good
+    out0 = eng.step({"s1": {"timestamp": "t0", "a": 1.0}}, timestep=0)
+    assert "m" in out0
+
+    # next step: timestamp missing entirely (not even present as key)
+    with pytest.raises(ValueError, match="timestamp missing"):
+        eng.step({"s1": {"a": None}}, timestep=1)
+
+
 def test_engine_raises_if_model_has_no_sources_configured():
     model = _StubModel(required_keys=["timestamp", "a"], calls=[])
     eng = Engine(models={"m": model}, model_sources={}, on_missing="skip")
@@ -147,3 +160,30 @@ def test_engine_feature_precedence_respects_source_order_first_non_none_wins():
     assert "m" in out
     assert len(model.calls) == 1
     assert model.calls[0]["features_data"]["a"] == 111.0
+
+
+def test_engine_hold_last_rejects_when_timestamp_missing_everywhere():
+    model = _StubModel(required_keys=["timestamp", "a"], calls=[])
+    eng = Engine(models={"m": model}, model_sources={"m": ["s1"]}, on_missing="hold_last")
+
+    # Establish last_good at t0
+    out0 = eng.step({"s1": {"timestamp": "t0", "a": 1.0}}, timestep=0)
+    assert "m" in out0
+
+    # Now timestamp is missing entirely (strict: cannot proceed)
+    try:
+        eng.step({"s1": {"a": 2.0}}, timestep=1)
+        assert False, "Expected ValueError when timestamp missing under hold_last"
+    except ValueError:
+        pass
+
+
+def test_engine_output_schema_has_expected_keys():
+    model = _StubModel(required_keys=["timestamp", "a"], calls=[])
+    eng = Engine(models={"m": model}, model_sources={"m": ["s1"]}, on_missing="skip")
+    out = eng.step({"s1": {"timestamp": "t0", "a": 1.0}}, timestep=0)
+    m = out["m"]
+    for k in ["raw", "likelihood", "p", "anomaly_probability", "log_likelihood", "pcount"]:
+        assert k in m
+    assert isinstance(m["raw"], float)
+    assert isinstance(m["likelihood"], float)
