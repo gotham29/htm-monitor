@@ -30,6 +30,25 @@ class Engine:
         return None
 
     @staticmethod
+    def _current_timestamp(rows_by_source: Mapping[str, Mapping[str, Any]]) -> Optional[str]:
+        """
+        Current timestep timestamp for the *system* (union/intersection stream emits a single timestep).
+        Returns the unique timestamp if present; raises if multiple different timestamps appear.
+        """
+        ts_set: Set[str] = set()
+        for r in rows_by_source.values():
+            if not isinstance(r, Mapping):
+                continue
+            ts = r.get("timestamp")
+            if isinstance(ts, str) and ts:
+                ts_set.add(ts)
+        if not ts_set:
+            return None
+        if len(ts_set) > 1:
+            raise ValueError(f"Timestamp mismatch in rows_by_source at this timestep: {sorted(ts_set)}")
+        return next(iter(ts_set))
+
+    @staticmethod
     def _all_timestamps(rows: List[Mapping]) -> Set[str]:
         out: Set[str] = set()
         for r in rows:
@@ -130,6 +149,10 @@ class Engine:
             raise ValueError(f"on_missing='{self.on_missing}' is not supported")
         outputs = {}
 
+        # For union+hold_last, some models won't have a row this timestep.
+        # We still need a "current" timestamp to run hold_last safely/strictly.
+        current_ts = self._current_timestamp(rows_by_source)
+
         for name, model in self.models.items():
             srcs_any = self.model_sources.get(name)
             if srcs_any is None:
@@ -153,10 +176,18 @@ class Engine:
 
             if merged is None:
                 if self.on_missing == "hold_last":
-                    raise ValueError(
-                        f"Model '{name}': timestamp missing in current rows; "
-                        "cannot hold_last without a current timestamp"
-                    )
+                    # No row for this model at this timestep (common under union).
+                    # Strict rule: we must have a *system* current timestamp to advance time.
+                    if current_ts is None:
+                        raise ValueError(
+                            f"Model '{name}': timestamp missing in current rows and no system timestamp present; "
+                            "cannot hold_last without a current timestamp"
+                        )
+                    prev = self._last_good.get(name)
+                    if prev is None:
+                        continue
+                    merged = dict(prev)
+                    merged["timestamp"] = current_ts
                 elif self.on_missing == "skip":
                     continue
                 else:
