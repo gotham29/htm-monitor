@@ -2,24 +2,22 @@
 
 import argparse
 import csv
-import time
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Iterator, Mapping, Optional, Tuple, Set, List
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Set, Tuple
 
-from htm_monitor.orchestration.engine import Engine
-from htm_monitor.orchestration.decision import Decision
-from htm_monitor.utils.config import build_from_config, load_yaml, merge_dicts
+from htm_monitor.utils.config import build_from_config
 
 from demo.live_plot import LivePlot
 
 
 def run(
     stream: Iterable[Mapping],
-    engine: Engine,
-    decision: Decision,
+    engine,
+    decision,
     on_update: Optional[Callable] = None,
 ):
     for t, row in enumerate(stream):
@@ -151,17 +149,6 @@ def _load_gt_set(sources: Dict[str, _SourceCfg], enabled: bool) -> Optional[set]
     return gt
 
 
-def _model_value_field(model_features: Iterable[str]) -> Optional[str]:
-    """
-    Pick the model's "value-like" feature for plotting.
-    Simple rule: first feature name that is not 'timestamp'.
-    """
-    for f in model_features:
-        if f != "timestamp":
-            return f
-    return None
-
-
 def _load_gt_by_source(sources: Dict[str, _SourceCfg], enabled: bool) -> Optional[Dict[str, set]]:
     if not enabled:
         return None
@@ -208,22 +195,10 @@ def main() -> None:
 
     _configure_logging(args.log_level, args.log_file)
 
-    cfg, engine, decision = build_from_config(args.defaults, args.config)
+    cfg, engine, decision, model_sources = build_from_config(args.defaults, args.config)
 
-    # model_sources normalized by build_from_config: model -> list[sources]
-    model_sources: Dict[str, List[str]] = {}
     model_value_fields: Dict[str, List[str]] = {}
     for model_name, mcfg in (cfg.get("models") or {}).items():
-        if "source" in mcfg:
-            model_sources[model_name] = [str(mcfg["source"])]
-        elif "sources" in mcfg:
-            srcs = mcfg.get("sources")
-            if not isinstance(srcs, list) or not srcs:
-                raise ValueError(f"Model '{model_name}' key 'sources' must be a non-empty list[str]")
-            model_sources[model_name] = [str(s) for s in srcs]
-        else:
-            raise ValueError(f"Model '{model_name}' must specify 'source' or 'sources'")
-
         # All non-timestamp features for this model (used only for plotting)
         feats = list(mcfg.get("features") or [])
         model_value_fields[model_name] = [f for f in feats if f != "timestamp"]
@@ -231,6 +206,8 @@ def main() -> None:
     sources = _load_sources(cfg)
     iters = {name: _csv_events(sc) for name, sc in sources.items()}
     mode = (cfg.get("data", {}).get("timebase", {}).get("mode") or "union").lower()
+    if mode not in ("union", "intersection"):
+        raise ValueError("data.timebase.mode must be 'union' or 'intersection'")
     stream = _timebase_intersection(iters) if mode == "intersection" else _timebase_union(iters)
 
     plot_cfg = cfg.get("plot") or {}

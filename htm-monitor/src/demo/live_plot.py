@@ -9,6 +9,14 @@ from typing import Any, Deque, Dict, List, Mapping, Optional, Set, Tuple
 import matplotlib.pyplot as plt
 
 
+def _coerce_float(x: Any) -> Optional[float]:
+    try:
+        if x is None:
+            return None
+        return float(x)
+    except Exception:
+        return None
+
 @dataclass
 class LivePlot:
     window: int = 1000
@@ -16,6 +24,9 @@ class LivePlot:
     gt_timestamps: Optional[Set[str]] = None  # timestamps with known anomalies
     timestamp_key: str = "timestamp"
     likelihood_threshold: Optional[float] = None  # draw horizontal line if set
+    # Which per-model score to plot on the anomaly panel (must be in [0,1] for the y-limits).
+    # Recommended: "anomaly_probability" (aka "p").
+    plot_score_key: str = "anomaly_probability"
 
     def __post_init__(self) -> None:
         # shared x over the sliding window
@@ -150,7 +161,8 @@ class LivePlot:
 
             # value lines are created lazily once we see feature names
             (lr,) = axa.plot([], [], label="raw")              # default blue
-            (ll,) = axa.plot([], [], label="likelihood")       # default orange
+            # default orange: plot_score_key (usually anomaly_probability / p)
+            (ll,) = axa.plot([], [], label=self.plot_score_key)
             self._l_raw[m] = lr
             self._l_lik[m] = ll
 
@@ -188,7 +200,7 @@ class LivePlot:
         # Single global legend (clean, non-crowded)
         # We add a representative "value(s)" handle later once value lines exist.
         handles = [lr, ll, self._sys_line]
-        labels = ["raw anomaly", "anomaly likelihood", "system alert"]
+        labels = ["raw anomaly", self.plot_score_key, "system alert"]
         self._legend = self._fig.legend(handles, labels, loc="upper right")
 
     def update(
@@ -281,10 +293,20 @@ class LivePlot:
                         self._l_val[m][f] = ln
 
             raw = out.get("raw")
-            lik = out.get("likelihood")
-            raw_f = float(raw) if isinstance(raw, numbers.Real) else float("nan")
-            lik_f = float(lik) if isinstance(lik, numbers.Real) else float("nan")
+            # Plot score for the non-technical story:
+            # - Primary: whatever plot_score_key says (default: anomaly_probability)
+            # - Back-compat fallbacks: anomaly_probability, p, likelihood
+            score = out.get(self.plot_score_key)
+            if score is None and self.plot_score_key != "anomaly_probability":
+                score = out.get("anomaly_probability")
+            if score is None and self.plot_score_key != "p":
+                score = out.get("p")
+            if score is None and self.plot_score_key != "likelihood":
+                score = out.get("likelihood")
 
+            raw_f = float(raw) if isinstance(raw, numbers.Real) else float("nan")
+            score_f = float(score) if isinstance(score, numbers.Real) else float("nan")
+ 
             if gt_by_model is not None:
                 gset = gt_by_model.get(m)
                 gt_flag = bool(gset is not None and ts is not None and ts in gset)
@@ -297,7 +319,7 @@ class LivePlot:
                 v_f = float(vv) if isinstance(vv, numbers.Real) else float("nan")
                 self._val[m][f].append(v_f)
             self._raw[m].append(raw_f)
-            self._lik[m].append(lik_f)
+            self._lik[m].append(score_f)
             self._gt[m].append(1.0 if gt_flag else 0.0)
 
             # Hot flag: prefer Decision-provided truth; fallback to simple threshold
@@ -305,9 +327,9 @@ class LivePlot:
                 self._hot[m].append(1.0 if bool(hot_by_model.get(m)) else 0.0)
             else:
                 is_hot = bool(
-                    isinstance(lik, numbers.Real)
+                    isinstance(score, numbers.Real)
                     and self.likelihood_threshold is not None
-                    and float(lik) >= float(self.likelihood_threshold)
+                    and float(score) >= float(self.likelihood_threshold)
                 )
                 self._hot[m].append(1.0 if is_hot else 0.0)
 
@@ -318,7 +340,8 @@ class LivePlot:
         xs = list(self._t)
         if xs:
             # Force a true sliding x-window (matplotlib otherwise keeps old limits)
-            self._ax_sys.set_xlim(xs[0], xs[-1])
+            if xs[0] != xs[-1]:
+                self._ax_sys.set_xlim(xs[0], xs[-1])
 
         # update model plots
         for m in self._model_names:
@@ -363,7 +386,7 @@ class LivePlot:
             any_val_line = next(iter(self._l_val.get(m0, {}).values()), None)
             if any_val_line is not None:
                 handles = [any_val_line, self._l_raw[m0], self._l_lik[m0], self._sys_line]
-                labels = ["value(s)", "raw anomaly", "anomaly likelihood", "system alert"]
+                labels = ["value(s)", "raw anomaly", self.plot_score_key, "system alert"]
                 self._legend.remove()
                 self._legend = self._fig.legend(handles, labels, loc="upper right")
 

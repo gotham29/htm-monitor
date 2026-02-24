@@ -1,3 +1,5 @@
+# tests/test_decision_kofn_window.py
+
 from htm_monitor.orchestration.decision import Decision
 
 
@@ -57,3 +59,35 @@ def test_kofn_window_returns_hot_by_model_for_all_models():
     assert set(out["hot_by_model"].keys()) == {"A", "B"}
     assert out["hot_by_model"]["A"] is True
     assert out["hot_by_model"]["B"] is False
+
+
+def test_kofn_window_missing_model_counts_as_miss_and_is_reported():
+    """
+    If a model disappears from model_outputs for a timestep (e.g. Engine skipped it),
+    Decision must append a MISS (False) so hotness cannot stick.
+    """
+    d = Decision(threshold=0.5, method="kofn_window", k=1, window_size=2, per_model_hits=2)
+
+    # t0: A hit
+    out0 = d.step({"A": {"likelihood": 0.6}})
+    assert out0["hot_by_model"]["A"] is False
+
+    # t1: A missing entirely -> should be treated as miss, window becomes [hit, miss] -> not hot
+    out1 = d.step({})
+    assert "A" in out1["hot_by_model"]
+    assert out1["hot_by_model"]["A"] is False
+    assert out1["alert"] is False
+    assert out1["system_score"] == 0.0
+
+
+def test_kofn_window_denominator_tracks_seen_models_even_when_missing():
+    """
+    system_score denom should match number of known models (seen so far).
+    """
+    d = Decision(threshold=0.5, method="kofn_window", k=1, window_size=1, per_model_hits=1)
+
+    d.step({"A": {"likelihood": 0.6}, "B": {"likelihood": 0.4}})
+    out = d.step({})  # both missing; both should be present as false
+
+    assert set(out["hot_by_model"].keys()) == {"A", "B"}
+    assert out["system_score"] == 0.0

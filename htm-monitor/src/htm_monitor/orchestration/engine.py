@@ -153,10 +153,10 @@ class Engine:
 
             if merged is None:
                 if self.on_missing == "hold_last":
-                    prev = self._last_good.get(name)
-                    if prev is None:
-                        continue
-                    merged = prev
+                    raise ValueError(
+                        f"Model '{name}': timestamp missing in current rows; "
+                        "cannot hold_last without a current timestamp"
+                    )
                 elif self.on_missing == "skip":
                     continue
                 else:
@@ -199,21 +199,21 @@ class Engine:
             ll_val: Optional[float] = None
             get_p = getattr(model, "last_anomaly_probability", None)
             if callable(get_p):
-                try:
-                    pv = get_p()
-                    if isinstance(pv, numbers.Real):
-                       p_val = float(pv)
-                except Exception:
-                    p_val = None
+                pv = get_p()
+                if pv is not None and not isinstance(pv, numbers.Real):
+                    raise ValueError(
+                        f"Model '{name}' last_anomaly_probability() must return a real number or None; got {type(pv)}"
+                    )
+                p_val = float(pv) if isinstance(pv, numbers.Real) else None
 
             get_ll = getattr(model, "last_log_likelihood", None)
             if callable(get_ll):
-                try:
-                    lv = get_ll()
-                    if isinstance(lv, numbers.Real):
-                        ll_val = float(lv)
-                except Exception:
-                    ll_val = None
+                lv = get_ll()
+                if lv is not None and not isinstance(lv, numbers.Real):
+                    raise ValueError(
+                        f"Model '{name}' last_log_likelihood() must return a real number or None; got {type(lv)}"
+                    )
+                ll_val = float(lv) if isinstance(lv, numbers.Real) else None
 
             outputs[name] = {
                 "raw": raw,

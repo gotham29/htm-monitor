@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 import numbers
-from typing import Deque, Dict, Optional
+from typing import Deque, Dict, Optional, Set
 
 
 class Decision:
@@ -51,11 +51,13 @@ class Decision:
         # Rolling hit buffers per model for kofn_window.
         # Each deque stores booleans: (likelihood >= threshold) for recent timesteps.
         self._hit_windows: Dict[str, Deque[bool]] = {}
+        self._seen_models: Set[str] = set()
 
     def _ensure_model(self, model_name: str) -> None:
         if model_name in self._hit_windows:
             return
         self._hit_windows[model_name] = deque(maxlen=self.window_size)
+        self._seen_models.add(model_name)
 
     def _kofn_window(self, model_outputs: Dict[str, Dict[str, float]]) -> Dict:
         """
@@ -67,14 +69,17 @@ class Decision:
         if self.k is None:
             raise ValueError("Decision(method='kofn_window') requires k")
 
-        n_models = len(model_outputs)
-        if n_models == 0:
+        if not model_outputs and not self._seen_models:
             return {"system_score": 0.0, "alert": False, "hot_by_model": {}}
 
         hot = 0
         hot_by_model: Dict[str, bool] = {}
-        for name, out in model_outputs.items():
+        # Important: models may be missing on a timestep (e.g., Engine skipped them).
+        # We treat missing as a MISS (append False) so hotness cannot "stick" silently.
+        all_names = set(self._seen_models) | set(model_outputs.keys())
+        for name in sorted(all_names):
             self._ensure_model(name)
+            out = model_outputs.get(name) or {}
             lik = out.get(self.score_key)
             is_hit = bool(isinstance(lik, numbers.Real) and lik >= self.threshold)
             self._hit_windows[name].append(is_hit)
@@ -85,7 +90,8 @@ class Decision:
             if is_hot:
                 hot += 1
 
-        system_score = float(hot) / float(n_models)
+        denom = float(len(all_names) or 1)
+        system_score = float(hot) / denom
         alert = hot >= int(self.k)
         return {"system_score": system_score, "alert": alert, "hot_by_model": hot_by_model}
 
