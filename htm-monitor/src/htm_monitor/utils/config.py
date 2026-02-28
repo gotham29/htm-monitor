@@ -127,6 +127,7 @@ def build_from_config(defaults_path: str, user_path: str):
             "data",
             "decision",
             "plot",
+            "calibration",
         },
     )
 
@@ -164,6 +165,7 @@ def build_from_config(defaults_path: str, user_path: str):
     mcfg_all = _require_mapping(cfg, "models")
     models: Dict[str, HTMmodel] = {}
     model_sources: Dict[str, List[str]] = {}
+    model_feature_names: Dict[str, List[str]] = {}
 
     htm_params = _require_mapping(cfg, "htm_params")
 
@@ -175,6 +177,7 @@ def build_from_config(defaults_path: str, user_path: str):
         feats = model_cfg.get("features")
         if not isinstance(feats, list) or not feats:
             raise ValueError(f"Model '{model_name}' key 'features' must be a non-empty list[str]")
+        model_feature_names[model_name] = [str(f) for f in feats]
 
         model_features: Dict[str, Feature] = {}
         for fname in feats:
@@ -196,7 +199,7 @@ def build_from_config(defaults_path: str, user_path: str):
     timebase = _optional_mapping(data, "timebase")
     on_missing = (timebase.get("on_missing") or "skip")
     on_missing = str(on_missing).lower()
-    engine = Engine(models, model_sources, on_missing=on_missing)
+    engine = Engine(models, model_sources, model_feature_names, on_missing=on_missing)
 
     dcfg = _require_mapping(cfg, "decision")
 

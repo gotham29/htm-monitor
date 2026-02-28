@@ -256,7 +256,7 @@ class HTMmodel:
             and (timestep % log_every) == 0
         ):
             st = self.al.debug_state() if hasattr(self.al, "debug_state") else {}
-            log.info(
+            log.debug(
                 "AL_TRACE model=%s t=%s ts=%s value=%s raw=%s p=%s log=%s state=%s",
                 (self.name or "?"),
                 timestep,

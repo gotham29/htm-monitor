@@ -1,221 +1,116 @@
 # src/htm_monitor/orchestration/engine.py
 
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Union
-import numbers
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Dict, List, Mapping, Optional, Sequence
+
 from htm_monitor.htm_src.htm_model import HTMmodel
+
+
+@dataclass(frozen=True)
+class EngineConfig:
+    on_missing: str = "skip"  # "skip" | "hold_last"
 
 
 class Engine:
     def __init__(
         self,
         models: Dict[str, HTMmodel],
-        model_sources: Dict[str, Union[str, Sequence[str]]],
-        on_missing: str = "skip",  # skip|hold_last
+        model_sources: Dict[str, Sequence[str]],
+        model_features: Dict[str, Sequence[str]],
+        *,
+        on_missing: str = "skip",
     ):
+        on_missing = str(on_missing).lower()
+        if on_missing not in ("skip", "hold_last"):
+            raise ValueError("Engine.on_missing must be 'skip' or 'hold_last'")
+
         self.models = models
-        self.model_sources = model_sources
-        self.on_missing = str(on_missing).lower()
+        self.model_sources = {m: list(srcs) for m, srcs in model_sources.items()}
+        self.model_features = {m: list(feats) for m, feats in model_features.items()}
+        self.on_missing = on_missing
 
-        # Per-model last good row (for hold_last)
-        self._last_good: Dict[str, Dict] = {}
-        # NOTE: do NOT validate on_missing here.
-        # Tests expect construction to succeed even for unknown values; we reject at runtime in step().
+        # hold_last memory (model -> last merged feature dict)
+        self._last_good: Dict[str, Dict[str, Any]] = {}
 
-    @staticmethod
-    def _first_timestamp(rows: List[Mapping]) -> Optional[str]:
-        for r in rows:
-            ts = r.get("timestamp") if isinstance(r, Mapping) else None
-            if isinstance(ts, str) and ts:
-                return ts
-        return None
+        # basic sanity: every model has sources + features
+        for m in self.models.keys():
+            if m not in self.model_sources or not self.model_sources[m]:
+                raise ValueError(f"Model '{m}' has no sources configured")
+            if m not in self.model_features or not self.model_features[m]:
+                raise ValueError(f"Model '{m}' has no features configured")
+            if "timestamp" not in self.model_features[m]:
+                raise ValueError(f"Model '{m}' features must include 'timestamp'")
 
     @staticmethod
     def _current_timestamp(rows_by_source: Mapping[str, Mapping[str, Any]]) -> Optional[str]:
-        """
-        Current timestep timestamp for the *system* (union/intersection stream emits a single timestep).
-        Returns the unique timestamp if present; raises if multiple different timestamps appear.
-        """
-        ts_set: Set[str] = set()
         for r in rows_by_source.values():
-            if not isinstance(r, Mapping):
-                continue
-            ts = r.get("timestamp")
-            if isinstance(ts, str) and ts:
-                ts_set.add(ts)
-        if not ts_set:
-            return None
-        if len(ts_set) > 1:
-            raise ValueError(f"Timestamp mismatch in rows_by_source at this timestep: {sorted(ts_set)}")
-        return next(iter(ts_set))
-
-    @staticmethod
-    def _all_timestamps(rows: List[Mapping]) -> Set[str]:
-        out: Set[str] = set()
-        for r in rows:
-            ts = r.get("timestamp") if isinstance(r, Mapping) else None
-            if isinstance(ts, str) and ts:
-                out.add(ts)
-        return out
-
-    @staticmethod
-    def _required_feature_names(model: Any, rows: List[Mapping]) -> List[str]:
-        """
-        Determine what keys must be present for model.run(features_data=...).
-
-        Priority (most explicit -> most generic):
-          1) model.required_keys (used by tests' _StubModel)
-          2) model.feature_names (+ model.feature_timestamp to exclude time in loop)
-          3) union of keys present in the incoming rows
-
-        Always includes 'timestamp' first (the rest in sorted order for determinism).
-        """
-        # 1) test stub convention
-        rk = getattr(model, "required_keys", None)
-        if isinstance(rk, list) and all(isinstance(x, str) for x in rk):
-            # keep order stable but ensure timestamp is first if present
-            if "timestamp" in rk:
-                return ["timestamp"] + [x for x in rk if x != "timestamp"]
-            return list(rk)
-
-        # 2) real HTMmodel convention
-        fn = getattr(model, "feature_names", None)
-        if isinstance(fn, list) and all(isinstance(x, str) for x in fn) and len(fn) > 0:
-            time_name = getattr(model, "feature_timestamp", None)
-            non_time = [x for x in fn if x != time_name]
-            # feature_names already includes timestamp name; normalize to literal 'timestamp' key used in rows
-            if "timestamp" in non_time:
-                non_time = [x for x in non_time if x != "timestamp"]
-            return ["timestamp"] + non_time
-
-        # 3) generic fallback: infer from rows
-        keys: Set[str] = set()
-        for r in rows:
             if isinstance(r, Mapping):
-                for k in r.keys():
-                    if isinstance(k, str) and k:
-                        keys.add(k)
-        keys.discard("timestamp")
-        return ["timestamp"] + sorted(keys)
+                ts = r.get("timestamp")
+                if isinstance(ts, str) and ts:
+                    return ts
+        return None
 
-    @staticmethod
-    def _merge_features(
-        model: Any,
-        rows: List[Mapping],
-    ) -> Optional[Dict]:
+    def _merge_for_model(self, model_name: str, rows_by_source: Mapping[str, Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
         """
-        Build the features_data dict required by HTMmodel.run():
-          - timestamp: must exist; if multiple exist they must match
-          - each required feature (non-timestamp): first non-None value across rows
-
-        Returns:
-          - None if timestamp missing
-          - Dict with timestamp + any found feature values (may be partial)
+        Returns merged features dict for this model at the current timestep, or None if we should skip.
         """
-        ts_set = Engine._all_timestamps(rows)
-        if len(ts_set) == 0:
+        ts = self._current_timestamp(rows_by_source)
+        if ts is None:
             return None
 
-        if len(ts_set) > 1:
-            # Airtight: do not silently merge mismatched timesteps
-            raise ValueError(f"Timestamp mismatch across sources: {sorted(ts_set)}")
-        ts = next(iter(ts_set))
+        feats = self.model_features[model_name]
+        srcs = self.model_sources[model_name]
 
-        merged: Dict = {"timestamp": ts}
+        merged: Dict[str, Any] = {"timestamp": ts}
 
-        required = Engine._required_feature_names(model, rows)
-        for fname in required:
-            if fname == "timestamp":
+        # pull feature values from sources in order; first non-None wins
+        for f in feats:
+            if f == "timestamp":
                 continue
 
-            val: Any = None
-            for r in rows:
-                if not isinstance(r, Mapping):
-                    continue
-                if fname in r:
-                    v = r.get(fname)
-                    if v is not None:
-                        val = v
-                        break
-
-            # Only set if found; callers decide how to handle missing required features.
-            if val is not None:
-                merged[fname] = val
-
-        return merged
-
-    def step(self, rows_by_source: Mapping[str, Mapping], timestep: int) -> Dict[str, Dict[str, float]]:
-        if self.on_missing not in ("skip", "hold_last"):
-            # Reject at runtime (tests expect __init__ to succeed even for bad values)
-            raise ValueError(f"on_missing='{self.on_missing}' is not supported")
-        outputs = {}
-
-        # For union+hold_last, some models won't have a row this timestep.
-        # We still need a "current" timestamp to run hold_last safely/strictly.
-        current_ts = self._current_timestamp(rows_by_source)
-
-        for name, model in self.models.items():
-            srcs_any = self.model_sources.get(name)
-            if srcs_any is None:
-                raise ValueError(f"Model '{name}' has no sources configured")
-
-            # normalize str|list into list[str]
-            if isinstance(srcs_any, str):
-                srcs: List[str] = [srcs_any]
-            else:
-                srcs = [str(s) for s in list(srcs_any)]
-            if len(srcs) == 0:
-                raise ValueError(f"Model '{name}' has no sources configured")
-
-            rows: List[Mapping] = []
+            v = None
             for s in srcs:
                 r = rows_by_source.get(s)
-                if isinstance(r, Mapping):
-                    rows.append(r)
+                if isinstance(r, Mapping) and r.get(f) is not None:
+                    v = r.get(f)
+                    break
 
-            merged = self._merge_features(model, rows)
+            if v is not None:
+                merged[f] = v
 
+        # if any non-timestamp feature is missing, apply on_missing
+        missing = [f for f in feats if f != "timestamp" and f not in merged]
+        if not missing:
+            return merged
+
+        if self.on_missing == "skip":
+            return None
+
+        # hold_last: fill missing from last_good if available
+        prev = self._last_good.get(model_name)
+        if prev is None:
+            return None
+
+        filled = dict(merged)
+        for f in missing:
+            if f in prev and prev[f] is not None:
+                filled[f] = prev[f]
+
+        still_missing = [f for f in feats if f != "timestamp" and f not in filled]
+        if still_missing:
+            return None
+
+        return filled
+
+    def step(self, rows_by_source: Mapping[str, Mapping[str, Any]], timestep: int) -> Dict[str, Dict[str, Any]]:
+        outputs: Dict[str, Dict[str, Any]] = {}
+
+        for name, model in self.models.items():
+            merged = self._merge_for_model(name, rows_by_source)
             if merged is None:
-                if self.on_missing == "hold_last":
-                    # No row for this model at this timestep (common under union).
-                    # Strict rule: we must have a *system* current timestamp to advance time.
-                    if current_ts is None:
-                        raise ValueError(
-                            f"Model '{name}': timestamp missing in current rows and no system timestamp present; "
-                            "cannot hold_last without a current timestamp"
-                        )
-                    prev = self._last_good.get(name)
-                    if prev is None:
-                        continue
-                    merged = dict(prev)
-                    merged["timestamp"] = current_ts
-                elif self.on_missing == "skip":
-                    continue
-                else:
-                    # Tests expect unknown modes to be rejected at runtime, not construction time
-                    raise ValueError(f"on_missing='{self.on_missing}' is not supported")
-            else:
-                # merged has a valid timestamp; ensure all required features exist
-                required = self._required_feature_names(model, rows)
-                missing = [k for k in required if k != "timestamp" and k not in merged]
-                if missing:
-                    if self.on_missing == "hold_last":
-                        prev = self._last_good.get(name)
-                        if prev is None:
-                            continue
-                        # Fill missing from last good, but keep current timestamp
-                        filled = dict(merged)
-                        for k in missing:
-                            if k in prev and prev[k] is not None:
-                                filled[k] = prev[k]
-                        # If still missing, we can't run.
-                        still_missing = [k for k in missing if k not in filled]
-                        if still_missing:
-                            continue
-                        merged = filled
-                    elif self.on_missing == "skip":
-                        continue
-                    else:
-                        raise ValueError(f"on_missing='{self.on_missing}' is not supported")
+                continue
 
             raw, likelihood, pcount = model.run(
                 features_data=merged,
@@ -223,39 +118,20 @@ class Engine:
                 learn=True,
             )
 
-            # ---- Optional HTMmodel-only metrics ----
-            # Unit tests use _StubModel (run-only). Real HTMmodel exposes:
-            #   last_anomaly_probability(), last_log_likelihood()
-            p_val: Optional[float] = None
-            ll_val: Optional[float] = None
-            get_p = getattr(model, "last_anomaly_probability", None)
-            if callable(get_p):
-                pv = get_p()
-                if pv is not None and not isinstance(pv, numbers.Real):
-                    raise ValueError(
-                        f"Model '{name}' last_anomaly_probability() must return a real number or None; got {type(pv)}"
-                    )
-                p_val = float(pv) if isinstance(pv, numbers.Real) else None
+            # These are stable for HTMmodel; for test stubs they can be absent (so: None)
+            p = model.last_anomaly_probability() if hasattr(model, "last_anomaly_probability") else None
+            ll = model.last_log_likelihood() if hasattr(model, "last_log_likelihood") else None
 
-            get_ll = getattr(model, "last_log_likelihood", None)
-            if callable(get_ll):
-                lv = get_ll()
-                if lv is not None and not isinstance(lv, numbers.Real):
-                    raise ValueError(
-                        f"Model '{name}' last_log_likelihood() must return a real number or None; got {type(lv)}"
-                    )
-                ll_val = float(lv) if isinstance(lv, numbers.Real) else None
-
-            outputs[name] = {
+            out = {
                 "raw": raw,
-                "likelihood": likelihood,  # legacy: this is computeLogLikelihood(p)
-                "p": p_val,  # legacy short name (may be None for stub models)
-                "anomaly_probability": p_val,
-                "log_likelihood": ll_val,
+                "likelihood": likelihood,
+                "p": float(p) if isinstance(p, (int, float)) else None,
+                "anomaly_probability": float(p) if isinstance(p, (int, float)) else None,
+                "log_likelihood": float(ll) if isinstance(ll, (int, float)) else None,
                 "pcount": pcount,
             }
-
-            # update last-good after a successful compute
+            outputs[name] = out
             self._last_good[name] = dict(merged)
 
         return outputs
+

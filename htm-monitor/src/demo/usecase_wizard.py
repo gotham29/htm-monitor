@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Mapping
 
 import yaml
 
 from demo.make_usecase_config import build_usecase_config, collect_sources_interactive, sources_from_dicts, sources_to_dicts
+from demo.encoding_sanity import summarize_range, write_linear_hist_png
 
 
 @dataclass(frozen=True)
@@ -21,6 +24,8 @@ class UsecaseBuildSpec:
     usecase: str
     sources: List[Dict[str, Any]]  # serialized SourceSpec dicts (no code objects)
     params: Dict[str, Any]         # args to build_usecase_config
+    calibration: Dict[str, Any]    # wizard-time calibration policy (for plots + defaults)
+    overrides: Dict[str, Any]      # frozen per-feature overrides
 
 
 def _prompt(msg: str, default: Optional[str] = None) -> str:
@@ -84,8 +89,47 @@ def _prompt_choice(msg: str, choices: List[str], default: str) -> str:
     return raw
 
 
+def _open_file(path: Path) -> None:
+    """
+    Best-effort open; no try/except. If it fails, we print the path.
+    """
+    p = str(path)
+    if sys.platform == "darwin":
+        subprocess.run(["open", p], check=False)
+    elif sys.platform.startswith("linux"):
+        subprocess.run(["xdg-open", p], check=False)
+    else:
+        # Windows or unknown
+        pass
+    print(f"[wizard] plot: {p}")
+
+
+def _prompt_optional_float(msg: str) -> Optional[float]:
+    raw = _prompt(msg, "").strip()
+    if raw == "":
+        return None
+    return float(raw)
+
+
+def _prompt_optional_float_default(msg: str, default: Optional[float]) -> Optional[float]:
+    d = "" if default is None else str(default)
+    raw = _prompt(msg, d).strip()
+    if raw == "":
+        return default
+    return float(raw)
+
+
 def run_interactive() -> UsecaseBuildSpec:
     usecase = _require_safe_usecase_name(_prompt("Use-case name"))
+
+    print("\n--- Calibration policy (used for preview plots + default config) ---")
+    low_q = _prompt_float("low_q", 0.01)
+    high_q = _prompt_float("high_q", 0.99)
+    margin = _prompt_float("margin", 0.03)
+    hist_bins = _prompt_int("hist_bins (linear)", 80)
+    # For count-like signals (NAB tweets), we never want negative encoder mins.
+    # User can set blank to disable (None).
+    min_floor = _prompt_optional_float_default("min_floor (blank=None; for counts use 0)", 0.0)
 
     print("\n--- Sources ---")
     sources = collect_sources_interactive()
@@ -96,11 +140,44 @@ def run_interactive() -> UsecaseBuildSpec:
     if model_layout == "chunk":
         chunk_size = _prompt_int("Chunk size (features per model)", 2)
 
-    print("\n--- Calibration ---")
-    low_q = _prompt_float("low_q", 0.01)
-    high_q = _prompt_float("high_q", 0.99)
-    margin = _prompt_float("margin", 0.03)
+    # Preview calibration now (show plots while wizard runs), allow one-shot overrides.
+    print("\n--- Encoding sanity (preview + freeze min/max once) ---")
+    overrides_features: Dict[str, Dict[str, float]] = {}
+    out_plot_dir = Path("outputs") / usecase / "calibration_plots"
+    out_plot_dir.mkdir(parents=True, exist_ok=True)
 
+    # We need real SourceSpec objects to read CSVs reliably.
+    src_specs = sources_from_dicts(sources_to_dicts(sources))
+    for src in src_specs:
+        for feat_name, col_name in src.fields.items():
+            import pandas as pd
+            df = pd.read_csv(src.path, usecols=[col_name], low_memory=False)
+            s = df[col_name]
+
+            summ = summarize_range(s, feature=feat_name, low_q=low_q, high_q=high_q, margin=margin, floor=min_floor)
+            png = write_linear_hist_png(
+                s,
+                summary=summ,
+                out_png=out_plot_dir / f"{feat_name}.png",
+                bins=int(hist_bins),
+                title_suffix=f"{src.name}:{col_name}",
+            )
+            _open_file(png)
+
+            print(
+                f"[wizard] {feat_name}: suggested minVal={summ.min_val:.6g} maxVal={summ.max_val:.6g} "
+                f"(q_low={summ.q_low:.6g} q_high={summ.q_high:.6g}, "
+                f"clip_low={summ.clip_low_rate:.4f} clip_high={summ.clip_high_rate:.4f})"
+            )
+            print("Press Enter to accept suggested min/max, or type explicit overrides.")
+            ov_min = _prompt_optional_float(f"  override {feat_name}.minVal (blank=accept)")
+            ov_max = _prompt_optional_float(f"  override {feat_name}.maxVal (blank=accept)")
+            if ov_min is not None or ov_max is not None:
+                mn = float(ov_min) if ov_min is not None else float(summ.min_val)
+                mx = float(ov_max) if ov_max is not None else float(summ.max_val)
+                if mx <= mn:
+                    raise ValueError(f"Invalid override for '{feat_name}': maxVal must be > minVal")
+                overrides_features[feat_name] = {"minVal": mn, "maxVal": mx}
     print("\n--- RDSE ---")
     rdse_size = _prompt_int("rdse_size", 2048)
     rdse_active_bits = _prompt_int("rdse_active_bits", 40)
@@ -134,7 +211,23 @@ def run_interactive() -> UsecaseBuildSpec:
     )
     _validate_params_mapping(params)
 
-    return UsecaseBuildSpec(usecase=usecase, sources=sources_to_dicts(sources), params=params)
+    calibration: Dict[str, Any] = dict(
+        method="quantile",
+        low_q=low_q,
+        high_q=high_q,
+        margin=margin,
+        hist_bins=int(hist_bins),
+        min_floor=min_floor,
+    )
+    overrides: Dict[str, Any] = dict(features=overrides_features)
+
+    return UsecaseBuildSpec(
+        usecase=usecase,
+        sources=sources_to_dicts(sources),
+        params=params,
+        calibration=calibration,
+        overrides=overrides,
+    )
 
 
 def main() -> None:
@@ -148,13 +241,29 @@ def main() -> None:
 
     if args.spec_out:
         spec_path = Path(args.spec_out)
-        blob = {"usecase": spec.usecase, "sources": spec.sources, "params": spec.params}
+        blob = {
+            "usecase": spec.usecase,
+            "sources": spec.sources,
+            "params": spec.params,
+            "calibration": spec.calibration,
+            "overrides": spec.overrides,
+        }
         _write_text_atomic(spec_path, yaml.safe_dump(blob, sort_keys=False))
         print(f"[usecase_wizard] wrote build spec -> {spec_path}")
 
     if not args.no_config:
         sources = sources_from_dicts(spec.sources)
-        cfg = build_usecase_config(spec.usecase, sources, **spec.params)
+        feature_overrides = (spec.overrides.get("features") if isinstance(spec.overrides, dict) else None) or None
+        min_floor = None
+        if isinstance(spec.calibration, dict):
+            min_floor = spec.calibration.get("min_floor")
+        cfg = build_usecase_config(
+            spec.usecase,
+            sources,
+            feature_overrides=feature_overrides,
+            calibration_min_floor=min_floor,
+            **spec.params,
+        )
         out_dir = Path(args.out_dir)
         out_path = out_dir / f"{spec.usecase}.yaml"
         _write_text_atomic(out_path, yaml.safe_dump(cfg, sort_keys=False))

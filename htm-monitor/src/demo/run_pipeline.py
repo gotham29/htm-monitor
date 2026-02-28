@@ -2,7 +2,9 @@
 
 import argparse
 import csv
+import json
 import logging
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -184,18 +186,139 @@ def _configure_logging(level: str, log_file: Optional[str]) -> None:
     )
 
 
+def _derive_run_name(config_path: str) -> str:
+    # configs/real_tweets_trio.yaml -> real_tweets_trio
+    return Path(config_path).stem
+
+
+@dataclass(frozen=True)
+class _RunPaths:
+    run_dir: Optional[Path]          # provided or derived; only set in run-dir mode
+    out_csv: Path
+    manifest: Path
+    analysis_dir: Optional[Path]     # only meaningful in run-dir mode
+
+
+def _resolve_run_paths(
+    *,
+    defaults_path: str,
+    config_path: str,
+    out: Optional[str],
+    run_dir: Optional[str],
+    run_name: Optional[str],
+) -> _RunPaths:
+    # Precedence:
+    #   1) --run-dir (canonical run-folder mode)
+    #   2) legacy --out (file-first mode; manifest next to csv)
+    if run_dir:
+        rd = Path(run_dir)
+        name = run_name or _derive_run_name(config_path)
+        # If user passed a directory that doesn't already include the name,
+        # we respect it as-is (no extra nesting); run_name is mainly for auto defaulting.
+        rd.mkdir(parents=True, exist_ok=True)
+        out_csv = rd / "run.csv"
+        manifest = rd / "run.manifest.json"
+        analysis_dir = rd / "analysis"
+        return _RunPaths(run_dir=rd, out_csv=out_csv, manifest=manifest, analysis_dir=analysis_dir)
+
+    # Legacy: out points to a CSV file path.
+    out_csv = Path(out or "outputs/out.csv")
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    manifest = out_csv.with_suffix(".manifest.json")
+    return _RunPaths(run_dir=None, out_csv=out_csv, manifest=manifest, analysis_dir=None)
+
+
+def _write_manifest(
+    out_csv: Path,
+    manifest_path: Path,
+    run_paths: Optional[_RunPaths],
+    defaults_path: str,
+    config_path: str,
+    cfg: dict,
+    sources: Dict[str, _SourceCfg],
+    model_sources: Dict[str, List[str]],
+    plot_enabled: bool,
+    plot_was_skipped: bool,
+    t_min: int,
+    t_max: int,
+    ts_start: Optional[str],
+    ts_end: Optional[str],
+) -> Path:
+    gt_by_source = {name: sorted(list(sc.gt_timestamps or [])) for name, sc in sources.items() if sc.gt_timestamps}
+    gt_all: List[str] = sorted({ts for v in gt_by_source.values() for ts in v})
+
+    manifest = {
+        "generated_at_utc": datetime.utcnow().isoformat() + "Z",
+        "python": {"version": sys.version.split()[0]},
+        "inputs": {"defaults": defaults_path, "config": config_path},
+        "data": {
+            "timebase_mode": (cfg.get("data", {}).get("timebase", {}).get("mode") or "union"),
+            "sources": {
+                name: {
+                    "path": sc.path,
+                    "timestamp_col": sc.timestamp_col,
+                    "timestamp_format": sc.timestamp_format,
+                    "fields": sc.fields,
+                }
+                for name, sc in sources.items()
+            },
+            "ground_truth": {"by_source": gt_by_source, "all": gt_all},
+        },
+        "models": {
+            "names": sorted(list(model_sources.keys())),
+            "model_sources": model_sources,
+        },
+        "decision": {
+            "method": (cfg.get("decision", {}) or {}).get("method"),
+            "score_key": (cfg.get("decision", {}) or {}).get("score_key"),
+            "threshold": (cfg.get("decision", {}) or {}).get("threshold"),
+            "k": (cfg.get("decision", {}) or {}).get("k"),
+            "window": (cfg.get("decision", {}) or {}).get("window"),
+        },
+        "run": {
+            "out_csv": str(out_csv),
+            "timesteps": {"min": int(t_min), "max": int(t_max), "count": int(t_max - t_min + 1) if t_max >= t_min else 0},
+            "time_range": {"start": ts_start, "end": ts_end},
+        },
+        "plot": {"enabled_in_config": bool((cfg.get("plot") or {}).get("enable")), "enabled_effective": bool(plot_enabled), "skipped_by_cli": bool(plot_was_skipped)},
+    }
+
+    # If we're in run-dir mode, add a tiny stable artifact contract (relative names).
+    if run_paths is not None and run_paths.run_dir is not None:
+        manifest["artifacts"] = {
+            "run_csv": "run.csv",
+            "manifest": "run.manifest.json",
+            "analysis_dir": "analysis",
+        }
+        manifest["run"]["run_dir"] = str(run_paths.run_dir)
+
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    return manifest_path
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--defaults", required=True)
     ap.add_argument("--config", required=True)
-    ap.add_argument("--out", default="outputs/out.csv")
+    ap.add_argument("--out", default="outputs/out.csv", help="Legacy: write CSV to this file (manifest written next to it)")
+    ap.add_argument("--run-dir", default=None, help="Canonical: write artifacts into this directory (run.csv, run.manifest.json)")
+    ap.add_argument("--run-name", default=None, help="Optional label for the run (mostly for UX / future defaults)")
     ap.add_argument("--log-level", default="INFO")
     ap.add_argument("--log-file", default=None)
+    ap.add_argument("--no-plot", action="store_true", help="Skip live plotting (useful for large runs)")
     args = ap.parse_args()
 
     _configure_logging(args.log_level, args.log_file)
 
     cfg, engine, decision, model_sources = build_from_config(args.defaults, args.config)
+
+    run_paths = _resolve_run_paths(
+        defaults_path=args.defaults,
+        config_path=args.config,
+        out=args.out,
+        run_dir=args.run_dir,
+        run_name=args.run_name,
+    )
 
     model_value_fields: Dict[str, List[str]] = {}
     for model_name, mcfg in (cfg.get("models") or {}).items():
@@ -213,7 +336,8 @@ def main() -> None:
     plot_cfg = cfg.get("plot") or {}
     plot = None
     gt_by_source = _load_gt_by_source(sources, bool(plot_cfg.get("show_ground_truth")))
-    if bool(plot_cfg.get("enable")):
+    plot_enabled_effective = bool(plot_cfg.get("enable")) and (not args.no_plot)
+    if plot_enabled_effective:
         gt_set = _load_gt_set(sources, bool(plot_cfg.get("show_ground_truth")))
         plot = LivePlot(
             window=int(plot_cfg.get("window", 1000)),
@@ -223,15 +347,21 @@ def main() -> None:
         )
     step_pause = float(plot_cfg.get("step_pause_s", 0.0) or 0.0)
 
-    outp = Path(args.out)
-    outp.parent.mkdir(parents=True, exist_ok=True)
+    outp = run_paths.out_csv
+
+    # We'll capture basic run boundaries for the manifest
+    seen_any = False
+    ts_first: Optional[str] = None
+    ts_last: Optional[str] = None
+    t_first: Optional[int] = None
+    t_last: Optional[int] = None
 
     with open(outp, "w", newline="") as g:
         w = csv.DictWriter(
             g,
             fieldnames=[
                 "t", "timestamp", "model",
-                "raw", "p", "likelihood",
+                "raw", "p", "likelihood", "score",
                 "system_score", "alert",
                 "hot_by_model",
             ],
@@ -239,6 +369,14 @@ def main() -> None:
         w.writeheader()
 
         def on_update(t, rows_by_source, model_outputs, result):
+            nonlocal seen_any, ts_first, ts_last, t_first, t_last
+            ts_any = _ts_any(rows_by_source)
+            if not seen_any:
+                seen_any = True
+                t_first = int(t)
+                ts_first = ts_any
+            t_last = int(t)
+            ts_last = ts_any
             # ----- Plot (generic) -----
             if plot is not None:
                 # Build a plot payload:
@@ -286,9 +424,13 @@ def main() -> None:
             sys_score = result.get("system_score") if isinstance(result, dict) else None
             alert = result.get("alert") if isinstance(result, dict) else None
             hot_by_model = result.get("hot_by_model") if isinstance(result, dict) else None
+            hot_by_model_json = json.dumps(hot_by_model, sort_keys=True) if hot_by_model is not None else None
+
             # write one line per model output
-            ts_any = _ts_any(rows_by_source)
+            score_key = getattr(decision, "score_key", None)
+            score_key = score_key if isinstance(score_key, str) and score_key else "p"
             for model_name, out in model_outputs.items():
+                score_val = out.get(score_key)
                 w.writerow(
                     {
                         "t": t,
@@ -298,8 +440,9 @@ def main() -> None:
                         "p": out.get("p"),
                         "likelihood": out.get("likelihood"),
                         "system_score": sys_score,
+                        "score": score_val,
                         "alert": alert,
-                        "hot_by_model": hot_by_model,
+                        "hot_by_model": hot_by_model_json,
                     }
                 )
 
@@ -307,6 +450,27 @@ def main() -> None:
             pass
 
     print(f"[run] wrote -> {outp}")
+    # Write companion manifest JSON next to the CSV for downstream analyze_run / README snapshots.
+    if seen_any and t_first is not None and t_last is not None:
+        mp = _write_manifest(
+            out_csv=outp,
+            manifest_path=run_paths.manifest,
+            run_paths=run_paths,
+            defaults_path=args.defaults,
+            config_path=args.config,
+            cfg=cfg,
+            sources=sources,
+            model_sources=model_sources,
+            plot_enabled=plot_enabled_effective,
+            plot_was_skipped=bool(args.no_plot),
+            t_min=t_first,
+            t_max=t_last,
+            ts_start=ts_first,
+            ts_end=ts_last,
+        )
+        print(f"[run] wrote -> {mp}")
+    else:
+        print("[run] warning: no rows processed; manifest not written.")
 
 
 if __name__ == "__main__":
