@@ -534,7 +534,7 @@ def main() -> None:
         # 1) Generate demo data (faster repeat + less noise)
         sh(
             [
-                sys.executable, "-m", "src.htm_monitor.demo.make_data",
+                sys.executable, "-m", "htm_monitor.demo.make_data",
                 "--out-dir", str(demo_dir),
                 "--baseline-drift", "0.0",
                 "--baseline-noise-frac", str(args.baseline_noise_frac),
@@ -642,7 +642,7 @@ def main() -> None:
         # wizard mode: build config + build spec interactively
         sh(
             [
-                sys.executable, "-m", "src.htm_monitor.cli.usecase_wizard",
+                sys.executable, "-m", "htm_monitor.cli.usecase_wizard",
                 "--out-dir", str(config_dir),
                 "--spec-out", str(build_spec_path),
             ],
@@ -684,7 +684,7 @@ def main() -> None:
 
     sh(
         [
-            sys.executable, "-m", "src.htm_monitor.cli.run_pipeline",
+            sys.executable, "-m", "htm_monitor.cli.run_pipeline",
             "--defaults", str(defaults_path),
             "--config", str(config_path),
             "--run-dir", str(out_dir),
@@ -695,7 +695,7 @@ def main() -> None:
     # 3) Analyze run
     sh(
         [
-            sys.executable, "-m", "src.htm_monitor.cli.analyze_run",
+            sys.executable, "-m", "htm_monitor.cli.analyze_run",
             "--run-dir", str(out_dir),
             "--config", str(config_path),
             "--prefer-hot-by-model",
