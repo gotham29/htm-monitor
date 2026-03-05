@@ -534,7 +534,7 @@ def main() -> None:
         # 1) Generate demo data (faster repeat + less noise)
         sh(
             [
-                sys.executable, "-m", "src.demo.make_data",
+                sys.executable, "-m", "src.htm_monitor.demo.make_data",
                 "--out-dir", str(demo_dir),
                 "--baseline-drift", "0.0",
                 "--baseline-noise-frac", str(args.baseline_noise_frac),
