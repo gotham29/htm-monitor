@@ -1,12 +1,15 @@
-# demo/live_plot.py
+# src/htm_monitor/viz/live_plot.py
+
 from __future__ import annotations
 
 import numbers
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Deque, Dict, List, Mapping, Optional, Set, Tuple
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
 
 def _coerce_float(x: Any) -> Optional[float]:
@@ -23,17 +26,26 @@ class LivePlot:
     refresh_every: int = 50
     gt_timestamps: Optional[Set[str]] = None  # timestamps with known anomalies
     timestamp_key: str = "timestamp"
-    likelihood_threshold: Optional[float] = None  # draw horizontal line if set
+    show_warmup_span: bool = True
     # Which per-model score to plot on the anomaly panel (must be in [0,1] for the y-limits).
     # Recommended: "anomaly_probability" (aka "p").
     plot_score_key: str = "anomaly_probability"
+    # Optional: record frames for README GIFs.
+    record_dir: Optional[str] = None
+    record_every: int = 1
+    record_dpi: int = 140
 
     def __post_init__(self) -> None:
         # shared x over the sliding window
         self._t: Deque[int] = deque(maxlen=self.window)
+        self._ts: Deque[Optional[str]] = deque(maxlen=self.window)
 
         # system series
         self._alert: Deque[float] = deque(maxlen=self.window)  # 0/1
+        # warmup series (0/1)
+        self._warm: Deque[float] = deque(maxlen=self.window)
+        # system GT series (0/1) for SYSTEM ALERT panel
+        self._gt_sys: Deque[float] = deque(maxlen=self.window)
 
         # per-model series
         self._model_names: List[str] = []
@@ -56,7 +68,6 @@ class LivePlot:
         self._l_val: Dict[str, Dict[str, Any]] = {}
         self._l_raw: Dict[str, Any] = {}
         self._l_lik: Dict[str, Any] = {}
-        self._thr_line: Dict[str, Any] = {}
 
         self._sys_fill = None
         self._sys_line = None
@@ -65,15 +76,53 @@ class LivePlot:
         # vline handles we explicitly create/remove (no try/except)
         self._gt_lines: Dict[str, List[Any]] = {}
         self._hot_spans: Dict[str, List[Any]] = {}
+        self._warmup_spans: List[Any] = []
+        # GT bands (more visible than dotted vlines)
+        self._gt_spans: Dict[str, List[Any]] = {}
+        self._gt_sys_spans: List[Any] = []
+
+        # recording state
+        self._record_dir: Optional[Path] = Path(self.record_dir).resolve() if self.record_dir else None
+        self._record_dir.mkdir(parents=True, exist_ok=True) if self._record_dir else None
+        self._frame_i = 0
+
+        # Visual defaults for demo-quality readability (screenshots + GIFs)
+        # Keep global mutations minimal: only rcParams that affect this figure.
+        plt.rcParams.update(
+            {
+                "figure.facecolor": "white",
+                "axes.facecolor": "white",
+                "axes.titlesize": 12,
+                "axes.labelsize": 10,
+                "xtick.labelsize": 9,
+                "ytick.labelsize": 9,
+                "legend.fontsize": 9,
+            }
+        )
 
         self._n = 0
 
         # styles (single source of truth)
-        self._gt_style = dict(color="purple", linewidth=2.5, alpha=0.75, linestyle=":")
-        self._hot_span_style = dict(alpha=0.18, linewidth=0)  # very light highlight
+        # NOTE: these are used in update(); they MUST exist even before we build the layout.
+        # Keep them simple + readable for demo screenshots.
+        # Crisp GT indicator (optional vline)
+        self._gt_style: Dict[str, Any] = dict(
+            color="magenta",
+            linewidth=2.5,
+            linestyle=":",
+            alpha=0.95,
+            zorder=8,
+        )
+        # Highly visible GT band (recommended for demo)
+        self._gt_span_style: Dict[str, Any] = dict(
+            facecolor="magenta",
+            alpha=0.12,
+            linewidth=0.0,
+            zorder=1,   # behind data lines
+        )
+        self._hot_span_style: Dict[str, Any] = dict(facecolor="orange", alpha=0.10, linewidth=0.0, zorder=0.5)
         # keep values visually distinct from raw/likelihood (blue/orange)
         self._value_colors = ["black", "dimgray", "gray", "slategray"]
-
         plt.ion()
 
     def _init_model_series(self, model_names: List[str]) -> None:
@@ -86,6 +135,7 @@ class LivePlot:
             self._lik[m] = deque(maxlen=self.window)
             self._gt[m] = deque(maxlen=self.window)
             self._gt_lines[m] = []
+            self._gt_spans[m] = []
             self._hot[m] = deque(maxlen=self.window)
             self._hot_spans[m] = []
 
@@ -128,7 +178,7 @@ class LivePlot:
         Layout A:
           For each model:
             [value axis]
-            [anom axis: raw+likelihood (+ threshold)]
+            [anom axis: raw + anomaly probability (+ threshold)]
           Bottom:
             [system alert axis]
         """
@@ -139,7 +189,13 @@ class LivePlot:
         # Layout: (value, anom) * n, spacer, system
         nrows = (2 * n) + 2
 
-        self._fig = plt.figure()
+        # Size the figure for legibility. GIFs are usually viewed smaller than the live window.
+        # Tune height by number of models; cap so it doesn’t get absurd for many models.
+        fig_w = 12.0
+        fig_h = min(3.6 + (2.2 * n), 16.0)
+        self._fig = plt.figure(figsize=(fig_w, fig_h))
+        self._fig.patch.set_facecolor("white")
+
         # Give SYSTEM ALERT a bit more height + add more vertical breathing room overall.
         # (Keeps the demo legible to non-technical viewers.)
         gs = self._fig.add_gridspec(
@@ -160,22 +216,22 @@ class LivePlot:
             self._axes_anom[m] = axa
 
             # value lines are created lazily once we see feature names
-            (lr,) = axa.plot([], [], label="raw")              # default blue
-            # default orange: plot_score_key (usually anomaly_probability / p)
-            (ll,) = axa.plot([], [], label=self.plot_score_key)
+            # The “raw” series is useful for debugging but can be noisy; keep it.
+            (lr,) = axa.plot([], [], label="Anomaly score", linewidth=1.0)  # default blue
+            # The main story for non-technical viewers:
+            # anomaly probability (or whatever plot_score_key selects).
+            (ll,) = axa.plot([], [], label="Anomaly probability", linewidth=2.3, zorder=5)
             self._l_raw[m] = lr
             self._l_lik[m] = ll
 
             # Put model name on the left instead of crowding titles
             axv.set_ylabel(self._display_name(m), rotation=0, labelpad=30, va="center")
             axv.grid(True, alpha=0.3)
-
-            if self.likelihood_threshold is not None:
-                self._thr_line[m] = axa.axhline(
-                    self.likelihood_threshold, alpha=0.35, linestyle="--", label="_nolegend_"
-                )
             axa.grid(True, alpha=0.3)
-            axa.set_ylim(0.0, 1.0)
+            # IMPORTANT: keep anomaly panel fixed to [0,1]. Do NOT autoscale it later.
+            # Give headroom so lines at ~1.0 don't "disappear" into the top spine.
+            axa.set_ylim(-0.05, 1.05)
+            axa.set_yticks([0.0, 0.5, 1.0])
 
             # Hide x tick labels everywhere except the very bottom system panel
             axv.tick_params(labelbottom=False)
@@ -194,14 +250,78 @@ class LivePlot:
         self._ax_sys.set_xlabel("t")
 
         # initialize system alert visuals
-        (self._sys_line,) = self._ax_sys.step([], [], where="post", label="system alert", color="red")
-        self._fig.suptitle("HTM Monitor (live)", y=0.995)
+        (self._sys_line,) = self._ax_sys.step(
+            [], [], where="post", label="system alert", color="red", linewidth=2.5
+        )
+        self._fig.suptitle("HTM Monitor (live)", y=0.99, fontsize=14)
 
         # Single global legend (clean, non-crowded)
         # We add a representative "value(s)" handle later once value lines exist.
         handles = [lr, ll, self._sys_line]
-        labels = ["raw anomaly", self.plot_score_key, "system alert"]
-        self._legend = self._fig.legend(handles, labels, loc="upper right")
+        labels = ["Anomaly score", "Anomaly probability", "system alert"]
+        self._legend = self._fig.legend(
+            handles,
+            labels,
+            loc="upper right",
+            frameon=True,
+            fancybox=True,
+            framealpha=0.90,
+        )
+
+        # Give the plot a little padding so titles/legend don’t feel cramped.
+        self._fig.subplots_adjust(left=0.08, right=0.98, top=0.96, bottom=0.06)
+
+    def _maybe_record_frame(self) -> None:
+        if self._record_dir is None or self._fig is None:
+            return
+        every = max(1, int(self.record_every))
+        # only record on refresh ticks (this function is called after refresh gating)
+        if (self._frame_i % every) != 0:
+            self._frame_i += 1
+            return
+        out = self._record_dir / f"frame_{self._frame_i:05d}.png"
+        # “Presentation-grade” frames:
+        # - tight bounding box removes excess whitespace
+        # - facecolor ensures consistent background in GIFs
+        self._fig.savefig(
+            out,
+            dpi=int(self.record_dpi),
+            bbox_inches="tight",
+            pad_inches=0.10,
+            facecolor=self._fig.get_facecolor(),
+        )
+        self._frame_i += 1
+
+    def _reset_and_rebuild(self, model_names: List[str]) -> None:
+        if self._fig is not None:
+            plt.close(self._fig)
+        self._t.clear()
+        self._ts.clear()
+        self._alert.clear()
+        self._warm.clear()
+        self._gt_sys.clear()
+        self._model_names = []
+        self._val.clear()
+        self._val_features.clear()
+        self._raw.clear()
+        self._lik.clear()
+        self._gt.clear()
+        self._hot.clear()
+        self._axes_val.clear()
+        self._axes_anom.clear()
+        self._ax_sys = None
+        self._ax_spacer = None
+        self._l_val.clear()
+        self._l_raw.clear()
+        self._l_lik.clear()
+        self._gt_lines.clear()
+        self._hot_spans.clear()
+        self._sys_fill = None
+        self._sys_line = None
+        self._legend = None
+        self._warmup_spans = []
+        self._gt_sys_spans = []
+        self._build_layout(model_names)
 
     def update(
         self,
@@ -218,24 +338,7 @@ class LivePlot:
         if not self._model_names:
             self._build_layout(model_names)
         elif set(model_names) != set(self._model_names):
-            # keep it simple: rebuild the figure if the set changes
-            plt.close(self._fig)
-            self._t.clear()
-            self._alert.clear()
-            self._val.clear()
-            self._raw.clear()
-            self._lik.clear()
-            self._gt.clear()
-            self._hot.clear()
-            self._axes_val.clear()
-            self._axes_anom.clear()
-            self._l_val.clear()
-            self._l_raw.clear()
-            self._l_lik.clear()
-            self._thr_line.clear()
-            self._gt_lines.clear()
-            self._hot_spans.clear()
-            self._build_layout(model_names)
+            self._reset_and_rebuild(model_names)
 
         # values_by_model: model -> {feature -> value}
         values_by_model = row.get("values_by_model")
@@ -246,14 +349,24 @@ class LivePlot:
         gt_by_model = row.get("gt_by_model")
         if not isinstance(gt_by_model, Mapping):
             gt_by_model = None
+        # system GT timestamps set (already computed in run_pipeline)
+        gt_system = row.get("gt_system")
+        if not isinstance(gt_system, (set, frozenset)):
+            gt_system = None
 
         alert = 1.0 if (isinstance(result, Mapping) and result.get("alert")) else 0.0
         hot_by_model = result.get("hot_by_model") if isinstance(result, Mapping) else None
         if not isinstance(hot_by_model, Mapping):
             hot_by_model = None
+        in_warmup = bool(row.get("in_warmup", False))
 
         self._t.append(int(t))
+        self._ts.append(str(ts) if ts is not None else None)
         self._alert.append(float(alert))
+        self._warm.append(1.0 if in_warmup else 0.0)
+        # system GT is timestamp-membership, same convention as per-model GT
+        sys_gt_flag = bool(gt_system is not None and ts is not None and ts in gt_system)
+        self._gt_sys.append(1.0 if sys_gt_flag else 0.0)
 
         # append one point per model (NaN for missing => gaps)
         for m, out in model_outputs.items():
@@ -266,24 +379,8 @@ class LivePlot:
             if self._val_features.get(m) != feat_names:
                 # If features change (rare), rebuild figure (keep it simple + correct)
                 if self._val_features.get(m) and self._val_features[m] != feat_names:
-                    plt.close(self._fig)
-                    self._t.clear()
-                    self._alert.clear()
-                    self._val.clear()
-                    self._val_features.clear()
-                    self._raw.clear()
-                    self._lik.clear()
-                    self._gt.clear()
-                    self._hot.clear()
-                    self._axes_val.clear()
-                    self._axes_anom.clear()
-                    self._l_val.clear()
-                    self._l_raw.clear()
-                    self._l_lik.clear()
-                    self._thr_line.clear()
-                    self._gt_lines.clear()
-                    self._hot_spans.clear()
-                    self._build_layout(model_names)
+                    self._reset_and_rebuild(model_names)
+
                 self._val_features[m] = feat_names
                 for f in feat_names:
                     if f not in self._val[m]:
@@ -297,16 +394,15 @@ class LivePlot:
             # - Primary: whatever plot_score_key says (default: anomaly_probability)
             # - Back-compat fallbacks: anomaly_probability, p, likelihood
             score = out.get(self.plot_score_key)
-            if score is None and self.plot_score_key != "anomaly_probability":
-                score = out.get("anomaly_probability")
-            if score is None and self.plot_score_key != "p":
-                score = out.get("p")
-            if score is None and self.plot_score_key != "likelihood":
-                score = out.get("likelihood")
 
             raw_f = float(raw) if isinstance(raw, numbers.Real) else float("nan")
             score_f = float(score) if isinstance(score, numbers.Real) else float("nan")
  
+            # Hide probability series during warmup (cleaner demo).
+            # Keep raw_f (debuggable), but probability should start after warmup.
+            if in_warmup:
+                score_f = float("nan")
+
             if gt_by_model is not None:
                 gset = gt_by_model.get(m)
                 gt_flag = bool(gset is not None and ts is not None and ts in gset)
@@ -326,12 +422,8 @@ class LivePlot:
             if hot_by_model is not None:
                 self._hot[m].append(1.0 if bool(hot_by_model.get(m)) else 0.0)
             else:
-                is_hot = bool(
-                    isinstance(score, numbers.Real)
-                    and self.likelihood_threshold is not None
-                    and float(score) >= float(self.likelihood_threshold)
-                )
-                self._hot[m].append(1.0 if is_hot else 0.0)
+                # No threshold line => no threshold-based "hot" fallback.
+                self._hot[m].append(0.0)
 
         self._n += 1
         if self._n % int(self.refresh_every) != 0:
@@ -339,9 +431,15 @@ class LivePlot:
 
         xs = list(self._t)
         if xs:
-            # Force a true sliding x-window (matplotlib otherwise keeps old limits)
-            if xs[0] != xs[-1]:
-                self._ax_sys.set_xlim(xs[0], xs[-1])
+            # HARD sliding window x-limits on ALL axes, every refresh.
+            # This prevents the "disappearing" behavior when deque hits maxlen.
+            x1 = xs[-1]
+            x0 = x1 - (int(self.window) - 1)
+            for mm in self._model_names:
+                self._axes_val[mm].set_xlim(x0, x1)
+                self._axes_anom[mm].set_xlim(x0, x1)
+            if self._ax_sys is not None:
+                self._ax_sys.set_xlim(x0, x1)
 
         # update model plots
         for m in self._model_names:
@@ -356,6 +454,17 @@ class LivePlot:
             self._l_raw[m].set_data(xs, list(self._raw[m]))
             self._l_lik[m].set_data(xs, list(self._lik[m]))
 
+            # clear + redraw GT spans (far more visible than vlines)
+            for sp in self._gt_spans[m]:
+                sp.remove()
+            self._gt_spans[m] = []
+            for x, g in zip(xs, self._gt[m]):
+                if g:
+                    # a very thin band around the timestep
+                    x0, x1 = x - 0.5, x + 0.5
+                    self._gt_spans[m].append(axv.axvspan(x0, x1, **self._gt_span_style))
+                    self._gt_spans[m].append(axa.axvspan(x0, x1, **self._gt_span_style))
+
             # clear + redraw GT vlines for this model (within window only)
             for ln in self._gt_lines[m]:
                 ln.remove()
@@ -363,7 +472,9 @@ class LivePlot:
 
             for x, g in zip(xs, self._gt[m]):
                 if g:
+                    # Optional crisp line on top of the GT band
                     self._gt_lines[m].append(axv.axvline(x, **self._gt_style))
+                    self._gt_lines[m].append(axa.axvline(x, **self._gt_style))
 
             # clear + redraw HOT spans (simple + obvious)
             for sp in self._hot_spans[m]:
@@ -375,20 +486,58 @@ class LivePlot:
                 self._hot_spans[m].append(axv.axvspan(x0, x1, **self._hot_span_style))
 
             axv.relim()
-            axv.autoscale_view()
-            axa.relim()
-            axa.autoscale_view()
-            axa.set_ylim(0.0, 1.0)  # keep likelihood visually comparable
+            # IMPORTANT: NEVER let autoscale touch x (we control x via hard sliding window).
+            axv.autoscale_view(scalex=False, scaley=True)
+            # IMPORTANT: DO NOT autoscale anomaly axes (it causes the “weird” looking panels).
+            # Keep anomaly y fixed; x is shared already.
+            # axa.relim(); axa.autoscale_view()  # intentionally disabled
+            axa.set_ylim(-0.05, 1.05)
+
+        # Clear + redraw SYSTEM GT spans (pink band) on system axis
+        for sp in self._gt_sys_spans:
+            sp.remove()
+        self._gt_sys_spans = []
+        if self._ax_sys is not None:
+            for x, g in zip(xs, list(self._gt_sys)):
+                if g:
+                    # thin band around timestep, same as model GT bands
+                    x0, x1 = x - 0.5, x + 0.5
+                    self._gt_sys_spans.append(self._ax_sys.axvspan(x0, x1, **self._gt_span_style))
+
+        # Clear + redraw WARMUP spans (system-wide, across all axes)
+        for sp in self._warmup_spans:
+            sp.remove()
+        self._warmup_spans = []
+        if self.show_warmup_span:
+            runs = self._contiguous_true_runs(xs, list(self._warm))
+            for x0, x1 in runs:
+                # shade on every axis so it reads immediately
+                for m in self._model_names:
+                    self._warmup_spans.append(self._axes_val[m].axvspan(x0, x1, alpha=0.06, linewidth=0.0, color="gray"))
+                    self._warmup_spans.append(self._axes_anom[m].axvspan(x0, x1, alpha=0.06, linewidth=0.0, color="gray"))
+                if self._ax_sys is not None:
+                    self._warmup_spans.append(self._ax_sys.axvspan(x0, x1, alpha=0.06, linewidth=0.0, color="gray"))
 
         # Ensure legend includes a representative "value(s)" handle (once lines exist)
         if self._legend is not None and self._model_names:
             m0 = self._model_names[0]
             any_val_line = next(iter(self._l_val.get(m0, {}).values()), None)
             if any_val_line is not None:
-                handles = [any_val_line, self._l_raw[m0], self._l_lik[m0], self._sys_line]
-                labels = ["value(s)", "raw anomaly", self.plot_score_key, "system alert"]
+                gt_handle = Line2D([0], [0], **{k: v for k, v in self._gt_style.items() if k != "alpha"})
+                gt_handle.set_alpha(self._gt_style.get("alpha", 1.0))
+                gt_handle.set_label("ground truth anomaly")
+
+                handles = [any_val_line, self._l_raw[m0], self._l_lik[m0], gt_handle, self._sys_line]
+                labels = ["value(s)", "Anomaly score", "Anomaly probability", "ground truth anomaly", "system alert"]
                 self._legend.remove()
-                self._legend = self._fig.legend(handles, labels, loc="upper right")
+                self._legend = self._fig.legend(
+                    handles,
+                    labels,
+                    loc="upper right",
+                    frameon=True,
+                    fancybox=True,
+                    framealpha=0.90,
+                )
 
         # update system alert (filled band + step)
         ys = list(self._alert)
@@ -396,9 +545,12 @@ class LivePlot:
         # remove old fill, draw new fill (simple + very legible)
         if self._sys_fill is not None:
             self._sys_fill.remove()
-        self._sys_fill = self._ax_sys.fill_between(xs, 0.0, ys, step="post", alpha=0.25)
+        self._sys_fill = self._ax_sys.fill_between(xs, 0.0, ys, step="post", alpha=0.35, zorder=0.2)
 
         self._fig.canvas.draw_idle()
         self._fig.canvas.flush_events()
+
+        # optionally record a frame for README GIFs
+        self._maybe_record_frame()
 
         plt.pause(0.001)

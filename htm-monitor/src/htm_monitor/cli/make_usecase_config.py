@@ -1,8 +1,9 @@
-# src/demo/make_usecase_config.py
+# src/htm-monitor/cli/make_usecase_config.py
 
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -287,11 +288,18 @@ def build_usecase_config(
     decision_k: int = 2,
     decision_window_size: int = 24,
     decision_per_model_hits: int = 2,
+    # run lifecycle defaults
+    run_warmup_steps: int = 0,
+    run_learn_after_warmup: bool = True,
+    # system-GT derivation defaults (separate from decision semantics)
+    gt_system_window_size: Optional[int] = None,
+    gt_system_per_source_hits: int = 1,
     # plot defaults
     plot_enable: bool = True,
     plot_window: int = 1000,
     plot_show_ground_truth: bool = True,
     plot_step_pause_s: float = 0.01,
+    plot_show_warmup_span: bool = True,
     # optional frozen overrides (picked once via wizard)
     feature_overrides: Optional[Mapping[str, Mapping[str, float]]] = None,
 ) -> Dict[str, Any]:
@@ -324,6 +332,14 @@ def build_usecase_config(
     decision_threshold = float(decision_threshold)
     if not (0.0 <= decision_threshold <= 1.0):
         raise ValueError("decision_threshold must be in [0, 1]")
+    run_warmup_steps = int(run_warmup_steps)
+    if run_warmup_steps < 0:
+        raise ValueError("run_warmup_steps must be >= 0")
+    run_learn_after_warmup = bool(run_learn_after_warmup)
+
+    gt_system_per_source_hits = int(gt_system_per_source_hits)
+    if gt_system_per_source_hits <= 0:
+        raise ValueError("gt_system_per_source_hits must be > 0")
 
     # ---- Features ----
     features: Dict[str, Any] = {
@@ -443,6 +459,23 @@ def build_usecase_config(
             }
         )
 
+    # Emit ground_truth only when at least one source has labels.
+    has_any_gt = any(bool(s.gt_timestamps) for s in sources)
+    ground_truth: Optional[Dict[str, Any]] = None
+    if has_any_gt:
+        ground_truth = {
+            "system": {
+                "method": "kofn_window",
+                "k": int(decision_k),
+                "window": {
+                    "size": int(gt_system_window_size)
+                    if gt_system_window_size is not None
+                    else int(decision_window_size),
+                    "per_source_hits": int(gt_system_per_source_hits),
+                },
+            }
+        }
+
     cfg: Dict[str, Any] = {
         "features": features,
         "models": models,
@@ -452,6 +485,11 @@ def build_usecase_config(
                 "on_missing": str(on_missing),
             },
             "sources": data_sources,
+        },
+        "run": {
+            # Canonical run lifecycle keys consumed by run_pipeline.
+            "warmup_steps": int(run_warmup_steps),
+            "learn_after_warmup": bool(run_learn_after_warmup),
         },
         "decision": {
             "score_key": str(decision_score_key),
@@ -468,8 +506,12 @@ def build_usecase_config(
             "step_pause_s": float(plot_step_pause_s),
             "window": int(plot_window),
             "show_ground_truth": bool(plot_show_ground_truth),
+            "show_warmup_span": bool(plot_show_warmup_span),
         },
     }
+
+    if ground_truth is not None:
+        cfg["ground_truth"] = ground_truth
 
     return cfg
 
@@ -530,6 +572,41 @@ def _validate_gt_timestamps(ts_list: List[str], ts_format: str) -> List[str]:
     return out
 
 
+def _load_gt_from_file(spec: str, *, source_name: str, default_key: str) -> Optional[List[str]]:
+    """
+    Support wizard input:
+      Ground truth timestamps: @file:/path/to/gt_timestamps.json
+
+    Accepted JSON shapes:
+      - list[str]
+      - {"timestamps": [...]}  (generic)
+      - {"sA": [...], "sB": [...], ...} (keyed by source name)
+      - {"meta": {...}, "<key>": [...]} (we ignore meta)
+    """
+    raw = (spec or "").strip()
+    if not raw.startswith("@file:"):
+        return None
+    path = raw[len("@file:") :].strip()
+    if not path:
+        raise ValueError("GT file spec is empty; use @file:<path>")
+    p = Path(path)
+    if not p.exists() or not p.is_file():
+        raise ValueError(f"GT file does not exist: {p}")
+    blob = json.loads(p.read_text())
+    if isinstance(blob, list):
+        return [str(x) for x in blob]
+    if isinstance(blob, dict):
+        # prefer explicit per-source key, then default_key (stem), then 'timestamps'
+        for k in (source_name, default_key, "timestamps"):
+            v = blob.get(k)
+            if v is None:
+                continue
+            if not isinstance(v, list):
+                raise ValueError(f"GT file key '{k}' must be a list of timestamp strings")
+            return [str(x) for x in v]
+    raise ValueError("GT file must be a JSON list or object containing a timestamps list")
+
+
 def collect_sources_interactive() -> List[SourceSpec]:
     n = _prompt_int("How many CSV sources?", 2)
     out: List[SourceSpec] = []
@@ -574,10 +651,15 @@ def collect_sources_interactive() -> List[SourceSpec]:
 
         print("\n(Optional) Ground truth timestamps for this source.")
         print("Enter comma-separated timestamps matching the timestamp format, or leave blank.")
+        print("Or: @file:<path/to/gt_timestamps.json> to load a list from file.")
         raw_gt = _prompt("Ground truth timestamps", "")
         gt = None
         if raw_gt.strip():
-            gt = _validate_gt_timestamps(_parse_ts_list(raw_gt), ts_fmt)
+            loaded = _load_gt_from_file(raw_gt, source_name=name, default_key=p.stem)
+            if loaded is not None:
+                gt = _validate_gt_timestamps(loaded, ts_fmt)
+            else:
+                gt = _validate_gt_timestamps(_parse_ts_list(raw_gt), ts_fmt)
 
         out.append(
             SourceSpec(
@@ -624,6 +706,14 @@ def main() -> None:
     decision_threshold = _prompt_float("decision.threshold", 0.997)
     decision_score_key = _prompt("decision.score_key", "anomaly_probability")
 
+    print("\n--- Run lifecycle (warmup + learn policy) ---")
+    warmup_steps = _prompt_int("run.warmup_steps (timesteps; 0 disables warmup)", 0)
+    learn_after = _prompt_choice(
+        "run.learn_after_warmup (true|false)",
+        ["true", "false"],
+        "true",
+    ) == "true"
+
     cfg = build_usecase_config(
         usecase,
         sources,
@@ -642,6 +732,8 @@ def main() -> None:
         decision_per_model_hits=decision_per_model_hits,
         decision_threshold=decision_threshold,
         decision_score_key=decision_score_key,
+        run_warmup_steps=warmup_steps,
+        run_learn_after_warmup=learn_after,
     )
 
     out_dir = Path(args.out_dir)

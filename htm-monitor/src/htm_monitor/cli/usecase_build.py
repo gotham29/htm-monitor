@@ -1,4 +1,4 @@
-# src/demo/usecase_build.py
+# src/htm-monitor/cli/usecase_build.py
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Mapping
 
 import yaml
 
-from demo.make_usecase_config import build_usecase_config, sources_from_dicts
+from .make_usecase_config import build_usecase_config, sources_from_dicts
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
@@ -52,6 +52,11 @@ def _normalize_sources_inplace(sources_raw: List[Dict[str, Any]]) -> None:
             # Move to canonical spot
             s.pop("gt_timestamps", None)
             s["labels"] = {"timestamps": gt}
+
+        # Spec convenience: allow "labels: {}" (or null) without timestamps.
+        # If present but empty, drop it so downstream config generation is clean.
+        if "labels" in s and (s.get("labels") is None or s.get("labels") == {}):
+            s.pop("labels", None)
 
 
 def _validate_spec(raw: Dict[str, Any]) -> None:

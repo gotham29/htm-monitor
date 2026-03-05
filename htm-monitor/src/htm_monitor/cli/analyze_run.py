@@ -1,111 +1,45 @@
+#src/htm_monitor/cli/analyze_run.py
+
+from __future__ import annotations
+
 import argparse
 import json
-import yaml
-import math
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-import logging
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Set
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
+import numpy as np
+import pandas as pd
+import yaml
 
 log = logging.getLogger("analyze_run")
 
-def parse_hot(x):
+
+# -------------------------
+# Small utilities
+# -------------------------
+
+def parse_hot(x: Any) -> Dict[str, Any]:
+    """
+    hot_by_model is serialized as JSON dict in run.csv.
+    Anything else -> {}.
+    """
     if isinstance(x, dict):
         return x
     if x is None or (isinstance(x, float) and np.isnan(x)):
         return {}
     if isinstance(x, str) and x.strip():
-        # Canonical serialization for CSV is JSON. Anything else is treated as empty.
-        try:
-            v = json.loads(x)
-        except Exception:
-            return {}
-        return v if isinstance(v, dict) else {}
+        v = json.loads(x)
+        if not isinstance(v, dict):
+            raise ValueError("hot_by_model must decode to a JSON object")
+        return v
     return {}
 
 
-def _load_manifest(manifest_path: str) -> Dict[str, Any]: 
-    """
-    Load manifest JSON as dict with minimal validation.
-    """
-    p = Path(manifest_path)
-    if not p.exists():
-        raise FileNotFoundError(f"manifest not found: {manifest_path}")
-    m = json.loads(p.read_text())
-    if not isinstance(m, dict):
-        raise ValueError("manifest JSON must be an object")
-    return m
-
-
-def load_run(path: str):
-    df = pd.read_csv(path)
-    df["ts"] = pd.to_datetime(df["timestamp"])
-    # If alert comes in as 0/1 numeric, astype(bool) is fine. If it's "True"/"False", coerce.
-    if df["alert"].dtype == object:
-        df["alert"] = df["alert"].astype(str).str.lower().isin(["true", "1", "yes", "y"])
-    else:
-        df["alert"] = df["alert"].astype(bool)
-    df["hot_dict"] = df.get("hot_by_model", "").apply(parse_hot)
-    # Defensive invariant lock: ensure stable ordering for all downstream logic.
-    if "t" in df.columns:
-        df = df.sort_values(["t", "model"], kind="mergesort").reset_index(drop=True)
-    return df
-
-
-def _dedup_steps(df: pd.DataFrame) -> pd.DataFrame:
-    # one row per timestep (system-level fields live duplicated across models)
-    df = df.sort_values(["t", "model"], kind="mergesort")
-    one = df.drop_duplicates("t", keep="first").copy()
-    one = one.sort_values("t", kind="mergesort").reset_index(drop=True)
-    return one
-
-
-def _episodes_from_boolean(mask: Sequence[bool], t_index: Sequence[int]) -> List[Tuple[int, int]]:
-    """
-    Convert a boolean mask aligned to t_index into contiguous [start_t, end_t] episodes (inclusive).
-    Assumes t_index is increasing by 1; if not, still works but episode gaps are based on adjacency in the list.
-    """
-    eps: List[Tuple[int, int]] = []
-    start: Optional[int] = None
-    prev_t: Optional[int] = None
-    for on, t in zip(mask, t_index):
-        if on and start is None:
-            start = t
-            prev_t = t
-            continue
-        if on and start is not None:
-            # continue episode if adjacent in index
-            if prev_t is not None and t == prev_t + 1:
-                prev_t = t
-                continue
-            # break episode if gap
-            eps.append((start, prev_t if prev_t is not None else start))
-            start = t
-            prev_t = t
-            continue
-        if (not on) and start is not None:
-            eps.append((start, prev_t if prev_t is not None else start))
-            start = None
-            prev_t = None
-    if start is not None:
-        eps.append((start, prev_t if prev_t is not None else start))
-    return eps
-
-
-def _safe_float(x: Any) -> Optional[float]:
-    try:
-        if x is None:
-            return None
-        if isinstance(x, float) and np.isnan(x):
-            return None
-        return float(x)
-    except Exception:
-        return None
+def _parse_ts_strict(ts: str, fmt: str) -> datetime:
+    return datetime.strptime(ts, fmt)
 
 
 def _format_stats(vals: List[float]) -> Dict[str, Optional[float]]:
@@ -122,112 +56,260 @@ def _format_stats(vals: List[float]) -> Dict[str, Optional[float]]:
     }
 
 
-def _load_decision_params_from_yaml_strict(config_path: str) -> Tuple[int, int, int, str]:
+def _episodes_from_boolean(mask: Sequence[bool], t_index: Sequence[int]) -> List[Tuple[int, int]]:
     """
-    Return (k, window_size, per_model_hits, score_key) from config YAML decision block.
-    Fail-fast if missing/malformed.
+    Contiguous [start_t, end_t] episodes (inclusive).
+    Assumes t_index is increasing; adjacency is defined by t == prev_t + 1.
     """
+    eps: List[Tuple[int, int]] = []
+    start: Optional[int] = None
+    prev_t: Optional[int] = None
+
+    for on, t in zip(mask, t_index):
+        if on and start is None:
+            start = int(t)
+            prev_t = int(t)
+            continue
+
+        if on and start is not None:
+            if prev_t is not None and int(t) == int(prev_t) + 1:
+                prev_t = int(t)
+                continue
+            # gap -> close previous, start new
+            eps.append((int(start), int(prev_t if prev_t is not None else start)))
+            start = int(t)
+            prev_t = int(t)
+            continue
+
+        if (not on) and start is not None:
+            eps.append((int(start), int(prev_t if prev_t is not None else start)))
+            start = None
+            prev_t = None
+
+    if start is not None:
+        eps.append((int(start), int(prev_t if prev_t is not None else start)))
+    return eps
+
+
+def _onsets_from_mask(mask: Sequence[bool], t_index: Sequence[int]) -> List[int]:
+    """
+    Return onset t's where mask transitions False->True.
+    """
+    out: List[int] = []
+    prev = False
+    for on, t in zip(mask, t_index):
+        onb = bool(on)
+        if onb and (not prev):
+            out.append(int(t))
+        prev = onb
+    return out
+
+
+def _safe_bool_series(x: pd.Series) -> pd.Series:
+    if x.dtype == object:
+        return x.astype(str).str.lower().isin(["true", "1", "yes", "y"])
+    return x.astype(bool)
+
+
+def _infer_step_minutes(ts: pd.Series) -> Optional[float]:
+    """
+    Infer typical timestep size (minutes) from timestamps in run.csv.
+    Uses median positive delta.
+    """
+    # Drop NaT before diff so we don't manufacture garbage deltas.
+    ts = ts.dropna()
+    dt = ts.sort_values().diff().dropna()
+    dt = dt[dt > pd.Timedelta(0)]
+    if dt.empty:
+        return None
+    minutes = dt.median().total_seconds() / 60.0
+    return float(minutes) if minutes > 0 else None
+
+
+# -------------------------
+# Load run + manifest + config
+# -------------------------
+
+def load_run(csv_path: str) -> pd.DataFrame:
+    df = pd.read_csv(csv_path)
+    if "timestamp" not in df.columns:
+        raise ValueError("run.csv missing required column 'timestamp'")
+    if "t" not in df.columns:
+        raise ValueError("run.csv missing required column 't'")
+    if "model" not in df.columns:
+        raise ValueError("run.csv missing required column 'model'")
+    if "alert" not in df.columns:
+        raise ValueError("run.csv missing required column 'alert'")
+
+    df["ts"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df["alert"] = _safe_bool_series(df["alert"])
+    df["hot_dict"] = df.get("hot_by_model", "").apply(parse_hot)
+
+    # Optional warmup signal emitted by run_pipeline (preferred).
+    if "in_warmup" in df.columns:
+        df["in_warmup"] = pd.to_numeric(df["in_warmup"], errors="coerce").fillna(0).astype(int).astype(bool)
+    else:
+        df["in_warmup"] = False
+
+    # Defensive invariant lock: stable ordering
+    df = df.sort_values(["t", "model"], kind="mergesort").reset_index(drop=True)
+    return df
+
+
+def _dedup_steps(df: pd.DataFrame) -> pd.DataFrame:
+    # One row per timestep (system-level fields duplicated across models)
+    one = df.drop_duplicates("t", keep="first").copy()
+    one = one.sort_values("t", kind="mergesort").reset_index(drop=True)
+    return one
+
+
+def _config_model_sources(config_path: str) -> Dict[str, List[str]]:
     cfg = yaml.safe_load(Path(config_path).read_text())
     if not isinstance(cfg, dict):
         raise ValueError("config YAML must be a mapping at top-level")
-    decision = cfg.get("decision")
+    models = cfg.get("models")
+    if not isinstance(models, dict) or not models:
+        raise ValueError("config.models missing or empty")
+    out: Dict[str, List[str]] = {}
+    for m, spec in models.items():
+        if not isinstance(spec, dict):
+            continue
+        srcs = spec.get("sources") or []
+        if not isinstance(srcs, list) or not all(isinstance(s, str) and s for s in srcs):
+            raise ValueError(f"config.models.{m}.sources must be a non-empty list[str]")
+        out[str(m)] = list(srcs)
+    return out
+
+
+@dataclass(frozen=True)
+class DecisionParams:
+    method: str
+    score_key: str
+    threshold: float
+    k: int
+    window_size: int
+    per_model_hits: int
+
+
+@dataclass(frozen=True)
+class SystemGtParams:
+    """
+    Parameters for deriving *system GT onsets* from per-source GT onset timestamps.
+
+    We default to:
+      - k, window_size from decision
+      - per_source_hits = 1 (because GT timestamps are onsets, not dense hit streams)
+    """
+    method: str
+    k: int
+    window_size: int
+    per_source_hits: int
+
+
+def _load_decision_params(config_path: str) -> DecisionParams:
+    cfg = yaml.safe_load(Path(config_path).read_text())
+    if not isinstance(cfg, dict):
+        raise ValueError("config YAML must be a mapping at top-level")
+
+    decision = cfg.get("decision") or {}
     if not isinstance(decision, dict):
         raise ValueError("config.decision must be a mapping")
+
+    method = str(decision.get("method") or "").strip() or "unknown"
+    score_key = str(decision.get("score_key") or "p").strip() or "p"
+
+    thr = decision.get("threshold")
+    if thr is None:
+        raise ValueError("config.decision.threshold missing")
+    threshold = float(thr)
+
     k = decision.get("k")
-    if k is None:
-        raise ValueError("config.decision.k missing")
-    if not isinstance(k, int):
-        raise ValueError("config.decision.k must be an int")
+    if k is None or not isinstance(k, int) or k <= 0:
+        raise ValueError("config.decision.k must be an int > 0")
+
     win = decision.get("window")
     if not isinstance(win, dict):
         raise ValueError("config.decision.window must be a mapping")
     size = win.get("size")
-    if size is None:
-        raise ValueError("config.decision.window.size missing")
-    if not isinstance(size, int):
-        raise ValueError("config.decision.window.size must be an int")
-    if k <= 0:
-        raise ValueError("config.decision.k must be > 0")
-    if size <= 0:
-        raise ValueError("config.decision.window.size must be > 0")
+    if size is None or not isinstance(size, int) or size <= 0:
+        raise ValueError("config.decision.window.size must be an int > 0")
     per_model_hits = win.get("per_model_hits", 1)
-    if not isinstance(per_model_hits, int):
-        raise ValueError("config.decision.window.per_model_hits must be an int")
-    if per_model_hits <= 0:
-        raise ValueError("config.decision.window.per_model_hits must be > 0")
-    score_key = decision.get("score_key") or "p"
-    if not isinstance(score_key, str) or not score_key.strip():
-        raise ValueError("config.decision.score_key must be a non-empty string when provided")
-    return int(k), int(size), int(per_model_hits), str(score_key)
+    if not isinstance(per_model_hits, int) or per_model_hits <= 0:
+        raise ValueError("config.decision.window.per_model_hits must be an int > 0")
+
+    return DecisionParams(
+        method=method,
+        score_key=score_key,
+        threshold=threshold,
+        k=int(k),
+        window_size=int(size),
+        per_model_hits=int(per_model_hits),
+    )
 
 
-def _resolve_score_column(df: pd.DataFrame, score_key: str) -> str:
+def _load_system_gt_params(config_path: str, decision: DecisionParams) -> SystemGtParams:
     """
-    Decide which column in the run CSV to use as the per-model score stream.
-    Priority:
-      1) explicit score column (recommended future-proof schema)
-      2) exact score_key column, if present
-      3) backwards-compat: anomaly_probability -> p
-      4) fallback to p if present
-    """
-    if "score" in df.columns:
-        return "score"
-    if score_key in df.columns:
-        return score_key
-    if score_key == "anomaly_probability" and "p" in df.columns:
-        return "p"
-    if "p" in df.columns:
-        return "p"
-    raise ValueError(f"Run CSV missing score column for score_key='{score_key}'. Have columns={list(df.columns)}")
+    Optional config section:
 
+      ground_truth:
+        system:
+          method: kofn_window
+          k: 2
+          window:
+            size: 6
+            per_source_hits: 1
 
-def _manifest_model_sources(manifest: Dict[str, Any]) -> Dict[str, List[str]]:
-    models = manifest.get("models")
-    if not isinstance(models, dict):
-        raise ValueError("manifest.models missing or not an object")
-    ms = models.get("model_sources")
-    if not isinstance(ms, dict):
-        raise ValueError("manifest.models.model_sources missing or not an object")
-    out: Dict[str, List[str]] = {}
-    for m, srcs in ms.items():
-        if isinstance(srcs, list) and all(isinstance(s, str) and s for s in srcs):
-            out[str(m)] = list(srcs)
-    if not out:
-        raise ValueError("manifest.models.model_sources is empty or invalid")
-    return out
-
-
-def _manifest_gt_by_source(manifest: Dict[str, Any]) -> Dict[str, List[str]]:
-    data = manifest.get("data")
-    if not isinstance(data, dict):
-        raise ValueError("manifest.data missing or not an object")
-    gt = data.get("ground_truth")
-    if not isinstance(gt, dict):
-        return {}
-    by = gt.get("by_source") or {}
-    if not isinstance(by, dict):
-        return {}
-    out: Dict[str, List[str]] = {}
-    for src, lst in by.items():
-        if isinstance(lst, list):
-            vals = [x for x in lst if isinstance(x, str) and x.strip()]
-            if vals:
-                out[str(src)] = vals
-    return out
-
-
-def _config_gt_by_source(config_path: str) -> Dict[str, List[str]]:
-    """
-    Load GT timestamp STRINGS from config YAML (no datetime mapping here).
-    Missing labels is allowed per-source.
+    If absent, we default to decision.k, decision.window_size, and per_source_hits=1.
     """
     cfg = yaml.safe_load(Path(config_path).read_text())
     if not isinstance(cfg, dict):
         raise ValueError("config YAML must be a mapping at top-level")
+
+    gt = cfg.get("ground_truth") or {}
+    if not isinstance(gt, dict):
+        gt = {}
+    sys_gt = gt.get("system") or {}
+    if not isinstance(sys_gt, dict):
+        sys_gt = {}
+
+    method = str(sys_gt.get("method") or "kofn_window").strip() or "kofn_window"
+    k = sys_gt.get("k", decision.k)
+    k = int(k)
+    if k <= 0:
+        raise ValueError("ground_truth.system.k must be > 0")
+
+    win = sys_gt.get("window") or {}
+    if win is None:
+        win = {}
+    if not isinstance(win, dict):
+        raise ValueError("ground_truth.system.window must be a mapping if provided")
+    window_size = int(win.get("size", decision.window_size))
+    if window_size <= 0:
+        raise ValueError("ground_truth.system.window.size must be an int > 0")
+
+    per_source_hits = win.get("per_source_hits", 1)
+    per_source_hits = int(per_source_hits)
+    if per_source_hits <= 0:
+        raise ValueError("ground_truth.system.window.per_source_hits must be an int > 0")
+
+    return SystemGtParams(method=method, k=k, window_size=window_size, per_source_hits=per_source_hits)
+
+
+def _config_gt_onsets_by_source(config_path: str) -> Dict[str, List[str]]:
+    """
+    Load GT onset timestamp strings from config YAML:
+      data.sources[*].labels.timestamps: [ "....", ... ]
+    (We treat these as ONSET timestamps per your spec.)
+    """
+    cfg = yaml.safe_load(Path(config_path).read_text())
+    if not isinstance(cfg, dict):
+        raise ValueError("config YAML must be a mapping at top-level")
+
     sources = (cfg.get("data") or {}).get("sources") or []
-    out: Dict[str, List[str]] = {}
     if not isinstance(sources, list):
-        return out
+        return {}
+
+    out: Dict[str, List[str]] = {}
     for s in sources:
         if not isinstance(s, dict):
             continue
@@ -244,7 +326,7 @@ def _config_gt_by_source(config_path: str) -> Dict[str, List[str]]:
             raise ValueError(f"config.data.sources[{name}].labels.timestamps must be a list of strings")
         vals = [x for x in ts_list if isinstance(x, str) and x.strip()]
         if vals:
-            out[name] = vals
+            out[str(name)] = vals
     return out
 
 
@@ -254,22 +336,24 @@ def _models_consuming_source(model_sources: Dict[str, List[str]], source: str) -
 
 def _build_ts_to_t_for_models(df: pd.DataFrame, models: List[str]) -> Dict[str, int]:
     """
-    Deterministic mapping from timestamp_string -> t for a subset of models.
-    Contract: (timestamp, model) -> t is unique; for a fixed timestamp the t is identical across those models.
+    Deterministic mapping timestamp_string -> t for a subset of models.
+    Contract: for a fixed timestamp, all those models share the same t.
     """
     if not models:
         return {}
     sub = df[df["model"].isin(models)][["timestamp", "t"]].copy()
     if sub.empty:
         return {}
-    # Ensure mapping is deterministic: any timestamp maps to exactly one t.
+
     g = sub.groupby("timestamp")["t"].nunique(dropna=False)
     bad = g[g > 1]
     if len(bad) > 0:
-        # show a small sample for debugging
         sample_ts = bad.index.tolist()[:5]
-        raise ValueError(f"Non-deterministic mapping: same timestamp maps to multiple t values. Sample timestamps={sample_ts}")
-    # use first t per timestamp
+        raise ValueError(
+            "Non-deterministic mapping: same timestamp maps to multiple t values. "
+            f"Sample timestamps={sample_ts}"
+        )
+
     ts_to_t = sub.drop_duplicates("timestamp", keep="first").set_index("timestamp")["t"].astype(int).to_dict()
     return {str(k): int(v) for k, v in ts_to_t.items() if isinstance(k, str) and k}
 
@@ -289,79 +373,92 @@ def _map_gt_strings_to_t(
         else:
             missing.append(ts)
     if missing and strict:
-        raise ValueError(f"GT timestamp(s) missing from run timeline for {ctx}: {missing[:10]}{' ...' if len(missing)>10 else ''}")
+        raise ValueError(
+            f"GT onset timestamp(s) missing from run timeline for {ctx}: "
+            f"{missing[:10]}{' ...' if len(missing)>10 else ''}"
+        )
     return sorted(set(out))
 
 
-def _episodes_from_series_crossing(piv: pd.DataFrame, model_col: str, thr: float) -> List[Tuple[int, int]]:
-    if model_col not in piv.columns:
-        return []
-    s = pd.to_numeric(piv[model_col], errors="coerce")
-    mask = (s >= float(thr)).fillna(False).astype(bool).tolist()
-    t_index = piv.index.astype(int).tolist()
-    return _episodes_from_boolean(mask, t_index)
+# -------------------------
+# System GT derivation (kofn_window)
+# -------------------------
+
+def _rolling_hits_to_hot_mask(n: int, hits_idx: List[int], *, window_size: int, per_model_hits: int) -> np.ndarray:
+    """
+    hits_idx are indices in [0, n-1] where a GT hit occurs.
+    hot[i] = 1 if sum(hits in [i-window_size+1, i]) >= per_model_hits
+    """
+    if n <= 0:
+        return np.zeros(0, dtype=np.int32)
+    if window_size <= 0 or per_model_hits <= 0:
+        return np.zeros(n, dtype=np.int32)
+
+    arr = np.zeros(n, dtype=np.int32)
+    for i in hits_idx:
+        if 0 <= int(i) < n:
+            arr[int(i)] = 1
+
+    if arr.sum() == 0:
+        return np.zeros(n, dtype=np.int32)
+
+    c = np.cumsum(arr, dtype=np.int32)
+    win = int(window_size)
+    sums = c.copy()
+    if win < n:
+        sums[win:] = c[win:] - c[:-win]
+    hot = (sums >= int(per_model_hits)).astype(np.int32)
+    return hot
 
 
-def _derive_system_gt_kofn_window(
+def derive_system_gt_onsets(
     one: pd.DataFrame,
-    gt_t_by_source: Dict[str, List[int]],
+    gt_onsets_t_by_source: Dict[str, List[int]],
     *,
     k: int,
     window_size: int,
     per_model_hits: int,
-) -> List[int]:
+) -> Tuple[List[int], Dict[str, Any]]:
     """
-    System GT consistent with kofn_window semantics:
-      - For each source, mark timesteps where that source has a GT "hit".
-      - A source is "hot" at t if (# hits in [t-window_size+1, t]) >= per_model_hits.
-      - System GT at t if >= k sources are hot at t.
-    """
-    if k <= 0:
-        return []
-    if window_size <= 0:
-        return []
-    if per_model_hits <= 0:
-        return []
+    Returns (system_gt_onset_timesteps, definition_dict).
 
+    - GT per source is onset *points* in timestep space.
+    - Convert each source's hit points into a per-timestep "hot" mask using kofn_window.
+    - System-hot mask if >=k sources hot at that timestep.
+    - Return ONSETS of system-hot mask.
+    """
     t_list = one["t"].astype(int).tolist()
     if not t_list:
-        return []
+        return [], {"k": k, "window_size": window_size, "per_model_hits": per_model_hits}
+
     t_min = int(t_list[0])
     t_max = int(t_list[-1])
-    n = t_max - t_min + 1
+    n = int(t_max - t_min + 1)
 
-    # For each source, build a 0/1 hit vector over the full contiguous t range.
     hot_by_src: Dict[str, np.ndarray] = {}
-    for src, hits in (gt_t_by_source or {}).items():
-        arr = np.zeros(n, dtype=np.int32)
-        for g in hits or []:
-            gi = int(g) - t_min
-            if 0 <= gi < n:
-                arr[gi] = 1
-        if arr.sum() == 0:
-            continue
-        # rolling window sum via cumulative sum
-        c = np.cumsum(arr, dtype=np.int32)
-        # window sum at i: c[i] - c[i-window_size] (with floor at 0)
-        win = window_size
-        sums = c.copy()
-        if win < n:
-            sums[win:] = c[win:] - c[:-win]
-        # if win >= n, sums already equals c (hits from start)
-        hot = (sums >= int(per_model_hits)).astype(np.int32)
-        hot_by_src[str(src)] = hot
+    for src, onsets in (gt_onsets_t_by_source or {}).items():
+        hits_idx = [int(t) - t_min for t in (onsets or []) if t is not None]
+        hot = _rolling_hits_to_hot_mask(n, hits_idx, window_size=window_size, per_model_hits=per_model_hits)
+        if hot.sum() > 0:
+            hot_by_src[str(src)] = hot
 
     if not hot_by_src:
-        return []
+        return [], {"k": k, "window_size": window_size, "per_model_hits": per_model_hits}
 
-    # Count hot sources per timestep
     hot_count = np.zeros(n, dtype=np.int32)
     for hot in hot_by_src.values():
         hot_count += hot
-    sys_mask = hot_count >= int(k)
-    sys_t = [t_min + i for i, on in enumerate(sys_mask.tolist()) if on]
-    return sys_t
 
+    sys_hot = (hot_count >= int(k)).astype(bool)
+    sys_t = [t_min + i for i in range(n)]
+
+    sys_onsets = _onsets_from_mask(sys_hot.tolist(), sys_t)
+    return sys_onsets, {"k": int(k), "window_size": int(window_size), "per_model_hits": int(per_model_hits)}
+
+
+# -------------------------
+# Episode-level scoring
+# -------------------------
 
 @dataclass
 class GtPerEventRow:
@@ -392,101 +489,111 @@ class GtEval:
     per_event: List[GtPerEventRow]
 
 
-def _eval_against_gt(one: pd.DataFrame, gt_t: List[int], episodes: List[Tuple[int, int]], max_lag_steps: int) -> GtEval:
+def eval_onsets_vs_episodes(
+    one: pd.DataFrame,
+    gt_onsets_t: List[int],
+    episodes: List[Tuple[int, int]],
+    *,
+    max_lag_steps: int,
+    step_minutes: Optional[float],
+    hot_dict_by_t: Optional[Dict[int, Dict[str, Any]]] = None,
+) -> GtEval:
     """
-    Episode-level scoring:
-      - an episode is a detection if its start is within [gt, gt+max_lag_steps]
+    Episode-level scoring with your stated semantics:
+      - a GT onset at g is detected if there exists an episode with start s in [g, g+max_lag_steps]
       - each episode can match at most one GT and vice versa (greedy in time order)
-    Lag is measured as episode_start_t - gt_t (>=0).
+      - lag is s - g (>=0)
     """
-    gt_t_sorted = sorted(gt_t)
-    ep_sorted = sorted(episodes, key=lambda x: x[0])
+    gt_sorted = sorted(set(int(x) for x in gt_onsets_t))
+    ep_sorted = sorted(episodes, key=lambda x: (int(x[0]), int(x[1])))
 
-    used_eps = set()
-    used_gt = set()
+    used_eps: Set[int] = set()
+    used_gt: Set[int] = set()
+
     lags_steps: List[float] = []
     lags_minutes: List[float] = []
 
-    # timestep -> timestamp mapping (for minutes lag)
     t_to_ts: Dict[int, Any] = dict(zip(one["t"].astype(int).tolist(), one["ts"].tolist()))
-    # timestep -> hot_dict mapping (for "what fired")
-    t_to_hot: Dict[int, Any] = dict(zip(one["t"].astype(int).tolist(), one.get("hot_dict", pd.Series([{}]*len(one))).tolist()))
 
     def _ts_str(x: Any) -> Optional[str]:
+        """
+        Convert pandas Timestamp / datetime / string into a stable string.
+        """
         if x is None:
             return None
-        try:
-            return str(pd.Timestamp(x))
-        except Exception:
-            try:
-                return str(x)
-            except Exception:
+        # pandas Timestamp / NaT
+        if isinstance(x, pd.Timestamp):
+            if pd.isna(x):
                 return None
+            # Keep it readable + stable (includes timezone if present).
+            return x.isoformat()
+        # python datetime
+        if isinstance(x, datetime):
+            return x.isoformat()
+        # already a string
+        if isinstance(x, str):
+            s = x.strip()
+            return s if s else None
+        # fallback: stringify
+        s = str(x).strip()
+        return s if s else None
 
     def _hot_models_at_t(t: int) -> List[str]:
-        d = t_to_hot.get(int(t)) or {}
+        if not hot_dict_by_t:
+            return []
+        d = hot_dict_by_t.get(int(t)) or {}
         if not isinstance(d, dict):
             return []
-        out = []
-        for k, v in d.items():
-            if bool(v):
-                out.append(str(k))
+        out = [str(k) for k, v in d.items() if bool(v)]
         return sorted(out)
 
     per_event: List[GtPerEventRow] = []
 
-    for gi, g in enumerate(gt_t_sorted):
-        best_ep_idx: Optional[int] = None
-        best_ep_start: Optional[int] = None
-        best_episode: Optional[Tuple[int, int]] = None
+    for gi, g in enumerate(gt_sorted):
+        match_idx: Optional[int] = None
+        match_episode: Optional[Tuple[int, int]] = None
+        match_start: Optional[int] = None
+
         for ei, (s, e) in enumerate(ep_sorted):
             if ei in used_eps:
                 continue
-            if s < g:
+            s = int(s)
+            if s < int(g):
                 continue
-            if s > g + max_lag_steps:
+            if s > int(g) + int(max_lag_steps):
                 break
-            best_ep_idx = ei
-            best_ep_start = s
-            best_episode = (s, e)
+            match_idx = ei
+            match_episode = (int(s), int(e))
+            match_start = int(s)
             break
-        if best_ep_idx is not None and best_ep_start is not None:
+
+        ts_g = t_to_ts.get(int(g))
+        if match_idx is not None and match_start is not None:
             used_gt.add(gi)
-            used_eps.add(best_ep_idx)
-            lag = best_ep_start - g
+            used_eps.add(match_idx)
+            lag = int(match_start) - int(g)
             lags_steps.append(float(lag))
-            # compute minutes if timestamps exist
-            ts_g = t_to_ts.get(int(g))
-            ts_s = t_to_ts.get(int(best_ep_start))
-            if ts_g is not None and ts_s is not None:
-                dt = (pd.Timestamp(ts_s) - pd.Timestamp(ts_g)).total_seconds() / 60.0
-                if dt >= 0:
-                    lags_minutes.append(float(dt))
 
-            # per-event row
-            lag_minutes: Optional[float] = None
-            if ts_g is not None and ts_s is not None:
-                try:
-                    lag_minutes = (pd.Timestamp(ts_s) - pd.Timestamp(ts_g)).total_seconds() / 60.0
-                except Exception:
-                    lag_minutes = None
+            lag_min: Optional[float] = None
+            if step_minutes is not None:
+                lag_min = float(lag) * float(step_minutes)
+                lags_minutes.append(float(lag_min))
 
+            ts_s = t_to_ts.get(int(match_start))
             per_event.append(
                 GtPerEventRow(
                     gt_t=int(g),
                     gt_ts=_ts_str(ts_g),
                     detected=True,
-                    detection_t=int(best_ep_start),
+                    detection_t=int(match_start),
                     detection_ts=_ts_str(ts_s),
-                    episode=best_episode,
+                    episode=match_episode,
                     lag_steps=int(lag),
-                    lag_minutes=float(lag_minutes) if (lag_minutes is not None and not math.isnan(lag_minutes)) else None,
-                    hot_models=_hot_models_at_t(int(best_ep_start)),
+                    lag_minutes=lag_min,
+                    hot_models=_hot_models_at_t(int(match_start)),
                 )
             )
         else:
-            # missed GT
-            ts_g = t_to_ts.get(int(g))
             per_event.append(
                 GtPerEventRow(
                     gt_t=int(g),
@@ -504,16 +611,57 @@ def _eval_against_gt(one: pd.DataFrame, gt_t: List[int], episodes: List[Tuple[in
     matched_gt = len(used_gt)
     matched_eps = len(used_eps)
     ep_count = len(ep_sorted)
-    gt_count = len(gt_t_sorted)
 
-    precision = (matched_eps / ep_count) if ep_count else None
+    # ---------------------------------------------------------
+    # Benchmark-grade FP logic
+    #
+    # An episode is only a false positive if its START lies
+    # outside every GT detection window [g, g + max_lag_steps].
+    #
+    # This prevents secondary alerts shortly after a real
+    # anomaly from being incorrectly counted as FP.
+    # ---------------------------------------------------------
+
+    gt_windows = [(int(g), int(g) + int(max_lag_steps)) for g in gt_sorted]
+
+    fp_eps: List[Tuple[int, int]] = []
+
+    for ep in ep_sorted:
+        s = int(ep[0])
+
+        inside_window = False
+
+        for g0, g1 in gt_windows:
+            if g0 <= s <= g1:
+                inside_window = True
+                break
+
+        if not inside_window:
+            fp_eps.append(ep)
+
+    # ---------------------------------------------------------
+    # Precision / Recall using benchmark FP semantics
+    #
+    # Precision denominator must be:
+    #   matched_episodes + false_positive_episodes
+    #
+    # NOT total episode count, because episodes inside a GT
+    # detection window are not considered false positives.
+    # ---------------------------------------------------------
+
+    gt_count = len(gt_sorted)
+
+    fp_count = len(fp_eps)
+    prec_denom = matched_eps + fp_count
+
+    precision = (matched_eps / prec_denom) if prec_denom > 0 else None
     recall = (matched_gt / gt_count) if gt_count else None
+
     f1 = None
     if precision is not None and recall is not None and (precision + recall) > 0:
         f1 = 2 * precision * recall / (precision + recall)
 
-    misses = [gt_t_sorted[i] for i in range(gt_count) if i not in used_gt]
-    fp_eps = [ep_sorted[i] for i in range(ep_count) if i not in used_eps]
+    misses = [gt_sorted[i] for i in range(gt_count) if i not in used_gt]
 
     return GtEval(
         gt_count=gt_count,
@@ -531,190 +679,262 @@ def _eval_against_gt(one: pd.DataFrame, gt_t: List[int], episodes: List[Tuple[in
     )
 
 
+# -------------------------
+# Detection episode derivation
+# -------------------------
+
+def _resolve_score_column(df: pd.DataFrame, score_key: str) -> str:
+    if score_key in df.columns:
+        return score_key
+    if score_key == "anomaly_probability" and "p" in df.columns:
+        return "p"
+    if score_key == "p" and "p" in df.columns:
+        return "p"
+    if "score" in df.columns:
+        return "score"
+    if "p" in df.columns:
+        return "p"
+    raise ValueError(
+        f"Run CSV missing score column for score_key='{score_key}'. "
+        f"Have columns={list(df.columns)}"
+    )
+
+
+def build_model_hot_mask(
+    df: pd.DataFrame,
+    model_name: str,
+    *,
+    score_col: str,
+    threshold: float,
+    prefer_hot_by_model: bool,
+) -> Tuple[List[int], List[bool]]:
+    """
+    Return (t_index, hot_mask) for a specific model.
+    prefer_hot_by_model: if True and hot_dict contains a key for this model, use it.
+    Else: use (score_col >= threshold).
+    """
+    sub = df[df["model"] == model_name].copy()
+    if sub.empty:
+        return [], []
+
+    sub = sub.sort_values("t", kind="mergesort")
+    t_index = sub["t"].astype(int).tolist()
+
+    if prefer_hot_by_model:
+        # If hot_by_model is present, it is system-decision-consistent.
+        # We treat missing keys as False.
+        hot_mask: List[bool] = []
+        for d in sub["hot_dict"].tolist():
+            if isinstance(d, dict) and (model_name in d):
+                hot_mask.append(bool(d.get(model_name)))
+            else:
+                hot_mask.append(False)
+        # Only use it if it provides ANY signal (otherwise fallback)
+        if any(hot_mask):
+            return t_index, hot_mask
+
+    s = pd.to_numeric(sub[score_col], errors="coerce")
+    hot = (s >= float(threshold)).fillna(False).astype(bool).tolist()
+    return t_index, hot
+
+
+# -------------------------
+# Main summarize
+# -------------------------
+
 def summarize(
     df: pd.DataFrame,
-    threshold: float,
-    config: Optional[str],
-    max_lag_steps: int,
+    *,
+    config_path: str,
     out_dir: Optional[str],
-    manifest_path: Optional[str] = None,
-    strict: bool = True,
+    max_lag_steps: int,
+    threshold_override: Optional[float],
+    prefer_hot_by_model: bool,
+    strict: bool,
 ) -> Dict[str, Any]:
     one = _dedup_steps(df)
 
-    print("\n=== RUN SUMMARY ===")
-    t_min = int(one["t"].min())
-    t_max = int(one["t"].max())
-    print("Timesteps:", t_min, "→", t_max, f"(n={len(one)})")
-    print("Time range:", str(one["ts"].min()), "→", str(one["ts"].max()))
-
-    total_alerts = int(one["alert"].sum())
-    print("Total alert timesteps:", total_alerts, f"({(total_alerts/len(one))*100:.2f}% of steps)" if len(one) else "")
-
-    alert_rows = one[one["alert"]]
-    if len(alert_rows):
-        print("\nAlert timesteps:")
-        for _, r in alert_rows.iterrows():
-            print(f"t={r['t']} ts={r['ts']} hot={r.get('hot_dict')}")
+    # Determine evaluation window: exclude warmup (if present).
+    warmup_steps = int(one["in_warmup"].sum()) if "in_warmup" in one.columns else 0
+    if "in_warmup" in one.columns:
+        one_eval = one[~one["in_warmup"]].copy()
     else:
-        print("\nNo alerts fired.")
+        one_eval = one.copy()
 
-    # Episodes (so we can talk in “incidents”, not just per-step alerts)
-    episodes = _episodes_from_boolean(one["alert"].tolist(), one["t"].astype(int).tolist())
-    ep_lens = [e - s + 1 for (s, e) in episodes]
-    print("\nAlert episodes:", len(episodes))
-    if episodes:
-        print("Episode lengths (steps):", f"min={min(ep_lens)} median={np.median(ep_lens):.1f} max={max(ep_lens)}")
+    if one_eval.empty:
+        raise ValueError("All timesteps are warmup (or no data). Cannot score.")
 
-    print(f"\n=== Per-model threshold crossings (p>={threshold}) ===")
-    score_key = "p"
-    if config:
-        _k, _w, _h, score_key = _load_decision_params_from_yaml_strict(config)
-    score_col = _resolve_score_column(df, score_key)
-    piv = df.pivot_table(index="t", columns="model", values=score_col, aggfunc="first").sort_index()
+    # Basic run stats
+    t_min = int(one_eval["t"].min())
+    t_max = int(one_eval["t"].max())
+    n_steps = int(len(one_eval))
+    step_minutes = _infer_step_minutes(one_eval["ts"])
 
-    for col in piv.columns:
-        count = int((piv[col] >= threshold).sum())
-        print(f"{col}: {count} crossings")
+    # Load contracts
+    model_sources = _config_model_sources(config_path)
+    decision = _load_decision_params(config_path)
+    sys_gt_params = _load_system_gt_params(config_path, decision)
+    gt_ts_by_source = _config_gt_onsets_by_source(config_path)
 
-    # Optional GT evaluation:
-    # Contract:
-    #  - Prefer YAML config GT (by_source) if provided
-    #  - Else use manifest GT (by_source) if manifest_path is provided
-    #  - Mapping is source-aware and exact-match on timestamp strings, before any dedup.
+    if not gt_ts_by_source and strict:
+        raise ValueError("No GT labels found in config (strict mode). Provide data.sources[*].labels.timestamps.")
 
-    gt_eval: Optional[GtEval] = None
-    gt_t: List[int] = []
-    gt_source: Optional[str] = None
-    gt_eval_by_model: Dict[str, Any] = {}
-    gt_eval_system: Optional[GtEval] = None
-    system_gt_t: List[int] = []
-    system_gt_def: Optional[Dict[str, Any]] = None
+    # Score selection + effective threshold
+    score_col = _resolve_score_column(df, decision.score_key)
+    threshold = float(threshold_override) if threshold_override is not None else float(decision.threshold)
 
-    gt_ts_by_source: Dict[str, List[str]] = {}
-    model_sources: Optional[Dict[str, List[str]]] = None
-    if manifest_path:
-        manifest = _load_manifest(manifest_path)
-        model_sources = _manifest_model_sources(manifest)
-        if not config:
-            gt_ts_by_source = _manifest_gt_by_source(manifest)
-            gt_source = "manifest"
+    # Alert episodes (system detection)
+    sys_eps = _episodes_from_boolean(one_eval["alert"].astype(bool).tolist(), one_eval["t"].astype(int).tolist())
 
-    if config:
-        gt_ts_by_source = _config_gt_by_source(config)
-        gt_source = "config"
+    # hot_dict for “what fired” at system detection times
+    hot_dict_by_t: Dict[int, Dict[str, Any]] = dict(zip(one_eval["t"].astype(int).tolist(), one_eval["hot_dict"].tolist()))
 
-    if gt_ts_by_source:
-        if model_sources is None:
-            raise ValueError("GT evaluation requires manifest_path to provide model_sources mapping (model -> sources)")
-
-        # --- per-source GT mapped to timesteps (SOURCE-AWARE, EXACT MATCH) ---
-        gt_t_by_source: Dict[str, List[int]] = {}
-        for src, gt_ts in gt_ts_by_source.items():
-            models_for_src = _models_consuming_source(model_sources, src)
-            ts_to_t = _build_ts_to_t_for_models(df, models_for_src)
-            gt_t_by_source[src] = _map_gt_strings_to_t(gt_ts, ts_to_t, strict=strict, ctx=f"source='{src}'")
-
-        # Strict mode: if ALL sources have empty GT, raise (otherwise evaluation is meaningless).
-        any_gt = any(bool(v) for v in gt_t_by_source.values())
-        if (not any_gt) and strict:
-            raise ValueError("No GT labels found for any source (strict mode). Provide labels.timestamps or run non-strict.")
-
-        # --- per-model eval (diagnostic): p-crossing episodes vs source GT ---
-        piv = df.pivot_table(index="t", columns="model", values=score_col, aggfunc="first").sort_index()
-        for model_name in piv.columns:
-            # source(s) are defined by manifest contract, not string matching
-            srcs = model_sources.get(str(model_name), []) if model_sources else []
-            if not srcs:
-                continue
-            # For diagnostic eval, if model has multiple sources, union their GT hits.
-            gt_model_t: List[int] = sorted(set(t for s in srcs for t in (gt_t_by_source.get(s) or [])))
-            if not gt_model_t:
-                continue
-            model_eps = _episodes_from_series_crossing(piv, str(model_name), threshold)
-            model_eval = _eval_against_gt(one, gt_model_t, model_eps, max_lag_steps=max_lag_steps)
-            gt_eval_by_model[str(model_name)] = {
-                "sources": list(srcs),
-                "gt_count": model_eval.gt_count,
-                "episode_count": model_eval.episode_count,
-                "precision": model_eval.precision,
-                "recall": model_eval.recall,
-                "f1": model_eval.f1,
-                "lag_steps_stats": model_eval.lag_steps_stats,
-                "lag_minutes_stats": model_eval.lag_minutes_stats,
-                "misses": model_eval.misses,
-                "false_positive_episodes": model_eval.false_positive_episodes,
-            }
-
-        # --- system-level eval: system alert episodes vs derived k-of-n overlap GT ---
-        k_cfg, win_cfg, hits_cfg, score_key = _load_decision_params_from_yaml_strict(config)
-        system_gt_t = _derive_system_gt_kofn_window(
-            one,
-            gt_t_by_source,
-            k=int(k_cfg),
-            window_size=int(win_cfg),
-            per_model_hits=int(hits_cfg),
+    # --- Map per-source GT onset timestamp strings -> t (source-aware)
+    gt_onsets_t_by_source: Dict[str, List[int]] = {}
+    for src, gt_ts in gt_ts_by_source.items():
+        models_for_src = _models_consuming_source(model_sources, src)
+        ts_to_t = _build_ts_to_t_for_models(df, models_for_src)
+        gt_onsets_t_by_source[src] = _map_gt_strings_to_t(
+            gt_ts,
+            ts_to_t,
+            strict=strict,
+            ctx=f"source='{src}'",
         )
-        system_gt_def = {"k": int(k_cfg), "window_size": int(win_cfg), "per_model_hits": int(hits_cfg), "source": "config.decision.kofn_window"}
-        if system_gt_t:
-            gt_eval_system = _eval_against_gt(one, system_gt_t, episodes, max_lag_steps=max_lag_steps)
 
-        # Optional legacy union-of-all debug: union GT over sources in TIMESTEP SPACE (still exact).
-        gt_t = sorted(set(t for v in gt_t_by_source.values() for t in (v or [])))
-        if gt_t:
-            gt_eval = _eval_against_gt(one, gt_t, episodes, max_lag_steps=max_lag_steps)
+        # Drop GT that occurs during warmup from evaluation window
+        if warmup_steps > 0:
+            gt_onsets_t_by_source[src] = [t for t in gt_onsets_t_by_source[src] if int(t) >= int(t_min)]
 
-        if gt_eval_by_model:
-            print("\n=== Ground-truth evaluation: per-model (p-crossing episodes vs per-source GT) ===")
-            for m, ev in gt_eval_by_model.items():
-                p = ev.get("precision"); r = ev.get("recall"); f1 = ev.get("f1")
-                if p is not None and r is not None and f1 is not None:
-                    print(f"{m}: P/R/F1 = {p:.3f}/{r:.3f}/{f1:.3f}")
-                else:
-                    print(f"{m}: insufficient data")
+    if strict and (not any(bool(v) for v in gt_onsets_t_by_source.values())):
+        raise ValueError("All sources have empty GT after mapping (strict).")
 
-        if gt_eval_system is not None:
-            print("\n=== Ground-truth evaluation: system-level (system alert vs derived k-of-n overlap GT) ===")
-            print("System GT def:", system_gt_def)
-            print(f"System GT events: {gt_eval_system.gt_count}")
-            if gt_eval_system.precision is not None:
-                print(f"Precision: {gt_eval_system.precision:.3f}")
-            if gt_eval_system.recall is not None:
-                print(f"Recall:    {gt_eval_system.recall:.3f}")
-            if gt_eval_system.f1 is not None:
-                print(f"F1:        {gt_eval_system.f1:.3f}")
+    # --- Per-model eval (model detection episodes vs that model's source GT onsets)
+    by_model: Dict[str, Any] = {}
+    for model_name in sorted(set(df["model"].astype(str).tolist())):
+        srcs = model_sources.get(model_name) or []
+        if not srcs:
+            continue
 
+        # union source GT onsets feeding this model
+        gt_model_onsets = sorted(set(t for s in srcs for t in (gt_onsets_t_by_source.get(s) or [])))
+        if not gt_model_onsets:
+            continue
+
+        t_idx, hot_mask = build_model_hot_mask(
+            df,
+            model_name,
+            score_col=score_col,
+            threshold=threshold,
+            prefer_hot_by_model=prefer_hot_by_model,
+        )
+        model_eps = _episodes_from_boolean(hot_mask, t_idx)
+
+        ev = eval_onsets_vs_episodes(
+            one_eval,
+            gt_model_onsets,
+            model_eps,
+            max_lag_steps=max_lag_steps,
+            step_minutes=step_minutes,
+            hot_dict_by_t=None,
+        )
+
+        by_model[model_name] = {
+            "sources": list(srcs),
+            "threshold": float(threshold),
+            "score_col": score_col,
+            "prefer_hot_by_model": bool(prefer_hot_by_model),
+            "gt_onsets": gt_model_onsets,
+            "episodes": model_eps,
+            "gt_count": ev.gt_count,
+            "episode_count": ev.episode_count,
+            "precision": ev.precision,
+            "recall": ev.recall,
+            "f1": ev.f1,
+            "lag_steps_stats": ev.lag_steps_stats,
+            "lag_minutes_stats": ev.lag_minutes_stats,
+            "misses": ev.misses,
+            "false_positive_episodes": ev.false_positive_episodes,
+        }
+
+    # --- System GT + system eval (kofn_window semantics)
+    sys_gt_onsets, sys_def = derive_system_gt_onsets(
+        one_eval,
+        gt_onsets_t_by_source,
+        k=sys_gt_params.k,
+        window_size=sys_gt_params.window_size,
+        per_model_hits=sys_gt_params.per_source_hits,
+    )
+
+    sys_eval: Optional[GtEval] = None
+    if sys_gt_onsets:
+        sys_eval = eval_onsets_vs_episodes(
+            one_eval,
+            sys_gt_onsets,
+            sys_eps,
+            max_lag_steps=max_lag_steps,
+            step_minutes=step_minutes,
+            hot_dict_by_t=hot_dict_by_t,
+        )
+
+    # Emit summary
     summary: Dict[str, Any] = {
         "csv": None,
-        "timesteps": {"min": t_min, "max": t_max, "count": int(len(one))},
-        "time_range": {"start": str(one["ts"].min()), "end": str(one["ts"].max())},
+        "config": config_path,
+        "warmup_steps": int(warmup_steps),
+        "eval_timesteps_excludes_warmup": True,
+        "timesteps": {"min": t_min, "max": t_max, "count": n_steps},
+        "time_range": {
+            "start": str(one_eval["ts"].min()),
+            "end": str(one_eval["ts"].max()),
+        },
+        "step_minutes_inferred": step_minutes,
+        "decision": {
+            "method": decision.method,
+            "score_key": decision.score_key,
+            "score_col": score_col,
+            "threshold_effective": float(threshold),
+            "k": decision.k,
+            "window_size": decision.window_size,
+            "per_model_hits": decision.per_model_hits,
+        },
         "alerts": {
-            "alert_timesteps": total_alerts,
-            "alert_rate": float(total_alerts / len(one)) if len(one) else 0.0,
+            "alert_timesteps": int(one_eval["alert"].sum()),
+            "alert_rate": float(one_eval["alert"].mean()) if n_steps else 0.0,
             "episodes": {
-                "count": int(len(episodes)),
-                "lengths_steps": ep_lens,
+                "count": int(len(sys_eps)),
+                "episodes": sys_eps,
             },
         },
-        "threshold": float(threshold),
-        "per_model_crossings": {str(c): int((piv[c] >= threshold).sum()) for c in piv.columns},
-        "ground_truth": None,
+        "ground_truth": {
+            "source": "config.data.sources[*].labels.timestamps (onsets)",
+            "by_source_onsets": gt_onsets_t_by_source,
+            "by_model": by_model,
+            "system": {
+                "definition": {
+                    "type": "kofn_window",
+                    "method": sys_gt_params.method,
+                    **sys_def,
+                },
+                "gt_onsets": sys_gt_onsets,
+                "eval": None,
+            },
+        },
+        "max_lag_steps": int(max_lag_steps),
     }
-    if gt_eval is not None:
-        summary["ground_truth"] = {
-            "source": gt_source,
-            "legacy_union_of_all": True,
-            "gt_event_timesteps": gt_t,
-            "max_lag_steps": int(max_lag_steps),
-            "precision": gt_eval.precision,
-            "recall": gt_eval.recall,
-            "f1": gt_eval.f1,
-            "matched_gt": int(gt_eval.matched_gt),
-            "matched_episodes": int(gt_eval.matched_episodes),
-            "lag_steps_stats": gt_eval.lag_steps_stats,
-            "lag_minutes_stats": gt_eval.lag_minutes_stats,
-            "misses": gt_eval.misses,
-            "false_positive_episodes": gt_eval.false_positive_episodes,
+
+    if sys_eval is not None:
+        summary["ground_truth"]["system"]["eval"] = {
+            "gt_count": sys_eval.gt_count,
+            "episode_count": sys_eval.episode_count,
+            "precision": sys_eval.precision,
+            "recall": sys_eval.recall,
+            "f1": sys_eval.f1,
+            "matched_gt": int(sys_eval.matched_gt),
+            "matched_episodes": int(sys_eval.matched_episodes),
+            "lag_steps_stats": sys_eval.lag_steps_stats,
+            "lag_minutes_stats": sys_eval.lag_minutes_stats,
+            "misses": sys_eval.misses,
+            "false_positive_episodes": sys_eval.false_positive_episodes,
             "per_event": [
                 {
                     "gt_t": r.gt_t,
@@ -727,179 +947,126 @@ def summarize(
                     "lag_minutes": r.lag_minutes,
                     "hot_models": r.hot_models,
                 }
-                for r in gt_eval.per_event
+                for r in sys_eval.per_event
             ],
         }
 
-    # Attach new layers even if legacy union is missing
-    if summary.get("ground_truth") is None:
-        summary["ground_truth"] = {
-            "source": gt_source,
-            "legacy_union_of_all": False,
-        }
-    if gt_eval_by_model:
-        summary["ground_truth"]["by_model"] = gt_eval_by_model
-    if gt_eval_system is not None:
-        summary["ground_truth"]["system"] = {
-            "definition": system_gt_def,
-            "gt_event_timesteps": system_gt_t,
-            "max_lag_steps": int(max_lag_steps),
-            "precision": gt_eval_system.precision,
-            "recall": gt_eval_system.recall,
-            "f1": gt_eval_system.f1,
-            "matched_gt": int(gt_eval_system.matched_gt),
-            "matched_episodes": int(gt_eval_system.matched_episodes),
-            "lag_steps_stats": gt_eval_system.lag_steps_stats,
-            "lag_minutes_stats": gt_eval_system.lag_minutes_stats,
-            "misses": gt_eval_system.misses,
-            "false_positive_episodes": gt_eval_system.false_positive_episodes,
-        }
-
-    # Write snapshot artifacts
+    # Write artifacts
     if out_dir:
         outp = Path(out_dir)
         outp.mkdir(parents=True, exist_ok=True)
+
         (outp / "run_summary.json").write_text(json.dumps(summary, indent=2))
 
-        # small Markdown snapshot for README-friendly reporting
-        md_lines = []
-        md_lines.append("# Run Summary\n")
-        md_lines.append(f"- Timesteps: **{t_min} → {t_max}** (n={len(one)})\n")
-        md_lines.append(f"- Time range: **{one['ts'].min()} → {one['ts'].max()}**\n")
-        md_lines.append(f"- Alert timesteps: **{total_alerts}** ({(total_alerts/len(one))*100:.2f}% of steps)\n" if len(one) else "- Alert timesteps: **0**\n")
-        md_lines.append(f"- Alert episodes: **{len(episodes)}**\n")
-        if episodes:
-            md_lines.append(f"  - Episode length (steps): min **{min(ep_lens)}**, median **{np.median(ep_lens):.1f}**, max **{max(ep_lens)}**\n")
-        md_lines.append("\n## Per-model crossings\n")
-        for m, c in summary["per_model_crossings"].items():
-            md_lines.append(f"- {m}: {c}\n")
-        if gt_eval is not None:
-            md_lines.append("\n## Ground-truth eval (episode-level)\n")
-            md_lines.append(f"- Source: **{gt_source}**\n")
-            md_lines.append(f"- GT events: **{gt_eval.gt_count}**\n")
-            md_lines.append(f"- Precision / Recall / F1: **{gt_eval.precision:.3f} / {gt_eval.recall:.3f} / {gt_eval.f1:.3f}**\n" if (gt_eval.precision is not None and gt_eval.recall is not None and gt_eval.f1 is not None) else "")
-            md_lines.append(f"- Lag steps stats: `{gt_eval.lag_steps_stats}`\n")
-            md_lines.append(f"- Lag minutes stats: `{gt_eval.lag_minutes_stats}`\n")
-            if gt_eval.misses:
-                md_lines.append(f"- Missed GTs (first 20): `{gt_eval.misses[:20]}`\n")
-            if gt_eval.false_positive_episodes:
-                md_lines.append(f"- False-positive episodes (first 10): `{gt_eval.false_positive_episodes[:10]}`\n")
-            # Per-event table for instant understanding
-            md_lines.append("\n## Per-event results\n\n")
-            md_lines.append("| # | Ground Truth Time | Detected? | Detection Time | Lag (min) | Episode (t) | Hot Models |\n")
-            md_lines.append("|---:|---|:---:|---|---:|---|---|\n")
-            for i, r in enumerate(gt_eval.per_event, start=1):
-                det = "✅" if r.detected else "❌"
-                gt_time = r.gt_ts or f"t={r.gt_t}"
-                det_time = r.detection_ts or "—"
-                lag_min = f"{r.lag_minutes:.1f}" if (r.lag_minutes is not None) else "—"
-                ep = f"{r.episode[0]}→{r.episode[1]}" if r.episode is not None else "—"
-                hot = ",".join([m.replace('Twitter_volume_', '').replace('_model','') for m in (r.hot_models or [])]) if r.hot_models else "—"
-                md_lines.append(f"| {i} | {gt_time} | {det} | {det_time} | {lag_min} | {ep} | {hot} |\n")
-        (outp / "run_summary.md").write_text("".join(md_lines))
+        # Markdown snapshot
+        md: List[str] = []
+        md.append("# Run Summary\n\n")
+        md.append(f"- Warmup steps (excluded from eval): **{warmup_steps}**\n")
+        md.append(f"- Timesteps: **{t_min} → {t_max}** (n={n_steps})\n")
+        md.append(f"- Time range: **{one_eval['ts'].min()} → {one_eval['ts'].max()}**\n")
+        if step_minutes is not None:
+            md.append(f"- Inferred step: **{step_minutes:.3f} min**\n")
+        md.append(f"- System alert timesteps: **{int(one_eval['alert'].sum())}** ({float(one_eval['alert'].mean())*100:.2f}% of steps)\n")
+        md.append(f"- System alert episodes: **{len(sys_eps)}**\n\n")
 
-        print(f"\n[analyze_run] wrote -> {outp / 'run_summary.json'}")
-        print(f"[analyze_run] wrote -> {outp / 'run_summary.md'}")
+        md.append("## Decision\n")
+        md.append(f"- method: `{decision.method}`\n")
+        md.append(f"- score_col: `{score_col}` (score_key=`{decision.score_key}`)\n")
+        md.append(f"- threshold_effective: **{threshold}**\n")
+        md.append(f"- kofn_window: k={decision.k}, window_size={decision.window_size}, per_model_hits={decision.per_model_hits}\n\n")
+
+        md.append("## Per-model eval (GT onsets → detection episode starts)\n\n")
+        if by_model:
+            md.append("| Model | Sources | GT | Episodes | P | R | F1 | Lag p50 (steps) |\n")
+            md.append("|---|---|---:|---:|---:|---:|---:|---:|\n")
+            for m, ev in by_model.items():
+                p = ev.get("precision"); r = ev.get("recall"); f1 = ev.get("f1")
+                lag_med = (ev.get("lag_steps_stats") or {}).get("median")
+                md.append(
+                    f"| {m} | {','.join(ev.get('sources') or [])} | {ev.get('gt_count',0)} | {ev.get('episode_count',0)} | "
+                    f"{(p if p is not None else '—')} | {(r if r is not None else '—')} | {(f1 if f1 is not None else '—')} | "
+                    f"{(lag_med if lag_med is not None else '—')} |\n"
+                )
+        else:
+            md.append("_No per-model GT eval rows (missing GT or model_sources mapping)._ \n")
+
+        md.append("\n## System eval (kofn_window-derived system GT onsets)\n\n")
+        md.append(f"- System GT onsets: **{len(sys_gt_onsets)}**\n")
+        if sys_eval is not None and sys_eval.precision is not None:
+            md.append(f"- Precision / Recall / F1: **{sys_eval.precision:.3f} / {sys_eval.recall:.3f} / {sys_eval.f1:.3f}**\n")
+            md.append(f"- Lag steps stats: `{sys_eval.lag_steps_stats}`\n")
+            md.append(f"- Lag minutes stats: `{sys_eval.lag_minutes_stats}`\n")
+        else:
+            md.append("_System GT empty or insufficient data for scoring._\n")
+
+        (outp / "run_summary.md").write_text("".join(md))
+        log.info("wrote %s", outp / "run_summary.json")
+        log.info("wrote %s", outp / "run_summary.md")
 
     return summary
 
 
-def plot_diagnostics(df, threshold=0.997):
-    one = df.drop_duplicates("t").set_index("t")
-    p_pivot = df.pivot_table(index="t", columns="model", values="p", aggfunc="first")
-
-    plt.figure()
-    for col in p_pivot.columns:
-        plt.plot(p_pivot.index, p_pivot[col], label=col)
-    plt.axhline(threshold, linestyle="--", color="black")
-    plt.title("Anomaly Probability (p)")
-    plt.xlabel("timestep")
-    plt.ylabel("p")
-    plt.legend()
-    plt.show()
-
-    hot_counts = one["hot_dict"].apply(
-        lambda d: sum(1 for v in d.values() if v) if isinstance(d, dict) else 0
-    )
-
-    plt.figure()
-    plt.plot(one.index, hot_counts, label="hot_count")
-    plt.plot(one.index, one["alert"].astype(int), label="alert")
-    plt.title("Decision Dynamics")
-    plt.xlabel("timestep")
-    plt.ylabel("count")
-    plt.legend()
-    plt.show()
-
-
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
-    # Canonical flag
-    ap.add_argument("--csv", required=False, help="Run CSV produced by pipeline (canonical flag)")
-    ap.add_argument("--run-dir", default=None, help="Canonical: run directory containing run.csv and run.manifest.json")
-    # Back-compat aliases (your command uses these)
-    ap.add_argument("--in-csv", dest="csv", help="Alias for --csv")
-    ap.add_argument("--out-dir", default=None, help="If set, writes run_summary.json and run_summary.md here")
-    ap.add_argument("--outdir", dest="out_dir", help="Alias for --out-dir")
-    ap.add_argument("--manifest", default=None, help="Back-compat: accepted but not required by this script")
-    ap.add_argument("--log-level", default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
-    ap.add_argument("--threshold", type=float, default=0.997, help="Per-model p threshold for crossings/plots")
-    ap.add_argument("--config", default=None, help="Optional YAML config to load GT labels.timestamps from")
-    ap.add_argument("--max-lag-steps", type=int, default=50, help="Max allowed detection lag (steps) after a GT event")
-    ap.add_argument("--no-plots", action="store_true", help="Skip plotting (useful for large runs / CI)")
-    ap.add_argument("--non-strict", action="store_true", help="Allow missing GT timestamps / empty GT without raising")
-    args = ap.parse_args()
 
+    ap.add_argument("--run-dir", default=None, help="Directory containing run.csv + run.manifest.json (canonical)")
+    ap.add_argument("--csv", default=None, help="Path to run.csv (optional if --run-dir provided)")
+    ap.add_argument("--config", required=True, help="YAML config (for GT + decision params)")
+
+    ap.add_argument("--out-dir", default=None, help="Write run_summary.json/md here (default: <run-dir>/analysis)")
+    ap.add_argument("--log-level", default="INFO")
+
+    ap.add_argument("--max-lag-steps", type=int, default=50)
+    ap.add_argument("--threshold", type=float, default=None, help="Override decision.threshold for scoring")
+    ap.add_argument("--prefer-hot-by-model", action="store_true", help="Prefer hot_by_model for per-model episodes if present")
+    ap.add_argument("--non-strict", action="store_true", help="Allow missing/empty GT without raising")
+
+    args = ap.parse_args()
     logging.basicConfig(level=getattr(logging, str(args.log_level).upper(), logging.INFO))
 
-    # If run-dir is provided, fill defaults from it unless explicitly overridden.
+    # Resolve paths from run-dir
     if args.run_dir:
         rd = Path(args.run_dir)
         if args.csv is None:
             args.csv = str(rd / "run.csv")
-        if args.manifest is None:
-            m = rd / "run.manifest.json"
-            if m.exists():
-                args.manifest = str(m)
         if args.out_dir is None:
             args.out_dir = str(rd / "analysis")
 
     if not args.csv:
-        ap.error("the following arguments are required: --csv (or --in-csv) or --run-dir")
-
-    manifest_path = args.manifest
-
-    if (manifest_path is None) and args.csv:
-        p = Path(args.csv)
-        auto = p.with_suffix(".manifest.json")
-        if auto.exists():
-            manifest_path = str(auto)
+        ap.error("Need --run-dir OR --csv")
 
     df = load_run(args.csv)
+
     summary = summarize(
         df,
-        threshold=args.threshold,
-        config=args.config,
-        max_lag_steps=args.max_lag_steps,
+        config_path=args.config,
         out_dir=args.out_dir,
-        manifest_path=manifest_path,
+        max_lag_steps=int(args.max_lag_steps),
+        threshold_override=args.threshold,
+        prefer_hot_by_model=bool(args.prefer_hot_by_model),
         strict=(not bool(args.non_strict)),
     )
 
-    # (manifest GT eval is now handled inside summarize(), so JSON/MD are consistent)
-    # attach csv path in emitted JSON (nice when you aggregate results later)
+    # Attach csv path in json (nice for aggregators)
     if args.out_dir:
         p = Path(args.out_dir) / "run_summary.json"
-        try:
-            j = json.loads(p.read_text())
-            j["csv"] = args.csv
-            j["config"] = args.config
-            p.write_text(json.dumps(j, indent=2))
-        except Exception:
-            pass
+        j = json.loads(p.read_text())
+        j["csv"] = args.csv
+        p.write_text(json.dumps(j, indent=2))
 
-    if not args.no_plots:
-        plot_diagnostics(df, threshold=args.threshold)
+    # Print a tiny terminal summary
+    sys_eval = ((summary.get("ground_truth") or {}).get("system") or {}).get("eval")
+    print("\n=== analyze_run ===")
+    print(f"run.csv: {args.csv}")
+    print(f"timesteps: {summary['timesteps']['min']} → {summary['timesteps']['max']} (n={summary['timesteps']['count']})")
+    print(f"alert episodes: {summary['alerts']['episodes']['count']}")
+    if isinstance(sys_eval, dict) and sys_eval.get("precision") is not None:
+        print(f"system P/R/F1: {sys_eval['precision']:.3f}/{sys_eval['recall']:.3f}/{sys_eval['f1']:.3f}")
+    else:
+        print("system eval: (no system GT onsets or insufficient data)")
+    if args.out_dir:
+        print(f"wrote: {Path(args.out_dir) / 'run_summary.json'}")
+        print(f"wrote: {Path(args.out_dir) / 'run_summary.md'}")
 
 
 if __name__ == "__main__":

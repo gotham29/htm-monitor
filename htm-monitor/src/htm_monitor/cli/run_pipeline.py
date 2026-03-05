@@ -1,10 +1,11 @@
-# demo/run_pipeline.py
+# src/htm_monitor/cli/run_pipeline.py
 
+from __future__ import annotations
 import argparse
 import csv
 import json
-import logging
 import sys
+import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,8 +13,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Set, Tuple
 
 from htm_monitor.utils.config import build_from_config
+from htm_monitor.diagnostics.run_diagnostics import RunDiagnostics, open_diag_writers
 
-from demo.live_plot import LivePlot
+from htm_monitor.viz.live_plot import LivePlot
+from htm_monitor.cli.analyze_run import load_run as _load_run_csv, summarize as _summarize_run
 
 
 def run(
@@ -21,13 +24,35 @@ def run(
     engine,
     decision,
     on_update: Optional[Callable] = None,
+    *,
+    diag: Optional[RunDiagnostics] = None,
+    warmup_steps: int = 0,
+    learn_after_warmup: bool = True,
 ):
+    warmup_steps = int(warmup_steps)
+    if warmup_steps < 0:
+        raise ValueError("run.warmup_steps must be >= 0")
+
     for t, row in enumerate(stream):
-        model_outputs = engine.step(row, timestep=t)
-        result = decision.step(model_outputs)
+        in_warmup = t < warmup_steps
+        learn = True if in_warmup else bool(learn_after_warmup)
+
+        model_outputs = engine.step(row, timestep=t, diag=diag, learn=learn)
+
+        # IMPORTANT: do not feed warmup steps into decision buffers.
+        if in_warmup:
+            result = {
+                "system_score": 0.0,
+                "alert": 0,
+                "hot_by_model": {},
+                # keep optional keys stable if decision emits them
+                "window_hot_by_model": {},
+            }
+        else:
+            result = decision.step(model_outputs)
 
         if on_update:
-            on_update(t, row, model_outputs, result)
+            on_update(t, row, model_outputs, result, in_warmup=in_warmup, learn=learn)
 
         yield result
 
@@ -141,16 +166,6 @@ def _load_sources(cfg: dict) -> Dict[str, _SourceCfg]:
     return out
 
 
-def _load_gt_set(sources: Dict[str, _SourceCfg], enabled: bool) -> Optional[set]:
-    if not enabled:
-        return None
-    gt: set = set()  # union GT across sources (keeps plot generic)
-    for s in sources.values():
-        if s.gt_timestamps:
-            gt.update(s.gt_timestamps)
-    return gt
-
-
 def _load_gt_by_source(sources: Dict[str, _SourceCfg], enabled: bool) -> Optional[Dict[str, set]]:
     if not enabled:
         return None
@@ -243,6 +258,9 @@ def _write_manifest(
     t_max: int,
     ts_start: Optional[str],
     ts_end: Optional[str],
+    warmup_steps: int,
+    learn_after_warmup: bool,
+    decision_score_key_effective: str,
 ) -> Path:
     gt_by_source = {name: sorted(list(sc.gt_timestamps or [])) for name, sc in sources.items() if sc.gt_timestamps}
     gt_all: List[str] = sorted({ts for v in gt_by_source.values() for ts in v})
@@ -271,6 +289,7 @@ def _write_manifest(
         "decision": {
             "method": (cfg.get("decision", {}) or {}).get("method"),
             "score_key": (cfg.get("decision", {}) or {}).get("score_key"),
+            "score_key_effective": str(decision_score_key_effective),
             "threshold": (cfg.get("decision", {}) or {}).get("threshold"),
             "k": (cfg.get("decision", {}) or {}).get("k"),
             "window": (cfg.get("decision", {}) or {}).get("window"),
@@ -279,6 +298,8 @@ def _write_manifest(
             "out_csv": str(out_csv),
             "timesteps": {"min": int(t_min), "max": int(t_max), "count": int(t_max - t_min + 1) if t_max >= t_min else 0},
             "time_range": {"start": ts_start, "end": ts_end},
+            "warmup_steps": int(warmup_steps),
+            "learn_after_warmup": bool(learn_after_warmup),
         },
         "plot": {"enabled_in_config": bool((cfg.get("plot") or {}).get("enable")), "enabled_effective": bool(plot_enabled), "skipped_by_cli": bool(plot_was_skipped)},
     }
@@ -296,6 +317,52 @@ def _write_manifest(
     return manifest_path
 
 
+def _validate_disabled_feature_not_in_models(cfg: dict) -> None:
+    """
+    Defensive invariant:
+      If a feature has encode: false, it must not appear in any model's features list.
+
+    Why:
+      The HTM model may legitimately treat encode:false features as "metadata-only" (0-bit SDR),
+      but some diagnostic paths build per-feature encoding maps only for encoded features.
+      Keeping disabled features in model feature lists can cause KeyError / misalignment.
+    """
+    feats = cfg.get("features") or {}
+    if not isinstance(feats, dict):
+        return
+
+    disabled: Set[str] = set()
+    for fname, fcfg in feats.items():
+        if isinstance(fcfg, dict) and (fcfg.get("encode") is False):
+            disabled.add(str(fname))
+
+    if not disabled:
+        return
+
+    models = cfg.get("models") or {}
+    if not isinstance(models, dict):
+        return
+
+    offenders: List[str] = []
+    for mname, mcfg in models.items():
+        if not isinstance(mcfg, dict):
+            continue
+        flist = mcfg.get("features") or []
+        if not isinstance(flist, list):
+            continue
+        bad = sorted([f for f in flist if f in disabled])
+        if bad:
+            offenders.append(f"{mname}: {bad}")
+
+    if offenders:
+        raise ValueError(
+            "Config invariant violated: feature(s) have encode:false but still appear in model feature lists.\n"
+            f"  disabled_features={sorted(disabled)}\n"
+            "  offenders:\n    - " + "\n    - ".join(offenders) + "\n"
+            "Fix: remove these features from cfg.models.<model>.features (or set encode:true)."
+        )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--defaults", required=True)
@@ -306,11 +373,68 @@ def main() -> None:
     ap.add_argument("--log-level", default="INFO")
     ap.add_argument("--log-file", default=None)
     ap.add_argument("--no-plot", action="store_true", help="Skip live plotting (useful for large runs)")
+    ap.add_argument(
+        "--no-analyze",
+        action="store_true",
+        help="Skip post-run analysis (run_summary.json/md). Default: analyze in --run-dir mode.",
+    )
+    ap.add_argument(
+        "--analyze-max-lag-steps",
+        type=int,
+        default=50,
+        help="Max detection lag in steps for GT matching (used by analyze_run).",
+    )
+    ap.add_argument(
+        "--analyze-non-strict",
+        action="store_true",
+        help="Allow missing/empty GT in analysis without raising.",
+    )
+    ap.add_argument(
+        "--diag-encoding",
+        default=None,
+        help="Write per-feature encoding stability diagnostics to this CSV (default: <run-dir>/analysis/encoding_diag.csv when --run-dir is used)",
+    )
+    ap.add_argument(
+        "--diag-tm",
+        default=None,
+        help="Write TM predictive-vs-active diagnostics to this CSV (default: <run-dir>/analysis/tm_diag.csv when --run-dir is used)",
+    )
     args = ap.parse_args()
 
     _configure_logging(args.log_level, args.log_file)
 
     cfg, engine, decision, model_sources = build_from_config(args.defaults, args.config)
+
+    # Hard invariant check (fail fast with a clear message)
+    _validate_disabled_feature_not_in_models(cfg)
+
+    # --- Run lifecycle policy (explicit) ---
+    # Defaults preserve current behavior (warmup=0, learning stays on).
+    run_cfg = cfg.get("run") or {}
+    if not isinstance(run_cfg, dict):
+        raise ValueError("Config.run must be a mapping if provided")
+    warmup_steps = int(run_cfg.get("warmup_steps", 0) or 0)
+    if warmup_steps < 0:
+        raise ValueError("run.warmup_steps must be >= 0")
+    learn_after_warmup = bool(run_cfg.get("learn_after_warmup", True))
+
+    # Freeze effective decision score key (what we actually write into 'score' column)
+    decision_score_key_effective = getattr(decision, "score_key", None)
+    if not isinstance(decision_score_key_effective, str) or not decision_score_key_effective.strip():
+        decision_score_key_effective = "p"
+    decision_score_key_effective = str(decision_score_key_effective).strip()
+
+    # Normalize "semantic" config names to the actual keys produced by engine.step()
+    # (This is THE place to do it, so plotting and CSV writing are consistent.)
+    _SCORE_KEY_ALIASES = {
+        "anomaly_probability": "p",
+        "probability": "p",
+        "p": "p",
+        "anomaly_score": "raw",
+        "raw": "raw",
+        "likelihood": "likelihood",
+    }
+    decision_score_key_engine = _SCORE_KEY_ALIASES.get(decision_score_key_effective, decision_score_key_effective)
 
     run_paths = _resolve_run_paths(
         defaults_path=args.defaults,
@@ -319,6 +443,32 @@ def main() -> None:
         run_dir=args.run_dir,
         run_name=args.run_name,
     )
+
+    # --- diagnostics outputs (artifact-grade evidence) ---
+    # Defaults only apply in run-dir mode; legacy mode requires explicit paths.
+    enc_path: Optional[Path] = None
+    tm_path: Optional[Path] = None
+    if args.diag_encoding is not None:
+        enc_path = Path(args.diag_encoding)
+    elif run_paths.analysis_dir is not None:
+        enc_path = run_paths.analysis_dir / "encoding_diag.csv"
+
+    if args.diag_tm is not None:
+        tm_path = Path(args.diag_tm)
+    elif run_paths.analysis_dir is not None:
+        tm_path = run_paths.analysis_dir / "tm_diag.csv"
+
+    # If user did not request diagnostics and we're not in run-dir mode, keep disabled.
+    enable_diag = (args.diag_encoding is not None) or (args.diag_tm is not None) or (run_paths.analysis_dir is not None)
+    diag: Optional[RunDiagnostics] = None
+    diag_handles: Dict[str, Any] = {}
+    if enable_diag:
+        # If run-dir mode, ensure analysis dir exists for the default paths
+        if run_paths.analysis_dir is not None:
+            run_paths.analysis_dir.mkdir(parents=True, exist_ok=True)
+        enc_w, tm_w, handles = open_diag_writers(encoding_path=enc_path, tm_path=tm_path)
+        diag = RunDiagnostics(encoding_writer=enc_w, tm_writer=tm_w)
+        diag_handles = handles
 
     model_value_fields: Dict[str, List[str]] = {}
     for model_name, mcfg in (cfg.get("models") or {}).items():
@@ -335,16 +485,38 @@ def main() -> None:
 
     plot_cfg = cfg.get("plot") or {}
     plot = None
-    gt_by_source = _load_gt_by_source(sources, bool(plot_cfg.get("show_ground_truth")))
+    show_gt = bool(plot_cfg.get("show_ground_truth"))
+    gt_by_source = _load_gt_by_source(sources, show_gt)
+    # Derive SYSTEM GT timestamps (k-of-n overlap across sources)
+    system_gt_ts: Optional[Set[str]] = None
+    if gt_by_source:
+        # union across sources then require >=2 overlaps within same timestamp
+        from collections import Counter
+        c = Counter()
+        for s, ts_list in gt_by_source.items():
+            for ts in ts_list:
+                c[ts] += 1
+        system_gt_ts = {ts for ts, n in c.items() if n >= 2}
     plot_enabled_effective = bool(plot_cfg.get("enable")) and (not args.no_plot)
+
     if plot_enabled_effective:
-        gt_set = _load_gt_set(sources, bool(plot_cfg.get("show_ground_truth")))
+        show_warmup_span = bool(plot_cfg.get("show_warmup_span", True))
+        rec_cfg = (plot_cfg.get("record") or {}) if isinstance(plot_cfg.get("record"), dict) else {}
+        rec_enable = bool(rec_cfg.get("enable", False))
+        rec_dir = rec_cfg.get("dir")
+        rec_every = int(rec_cfg.get("every", 1) or 1)
+        rec_dpi = int(rec_cfg.get("dpi", 140) or 140)
+
         plot = LivePlot(
-            window=int(plot_cfg.get("window", 1000)),
-            refresh_every=1,  # you want every step visible
-            gt_timestamps=gt_set,
-            likelihood_threshold=getattr(decision, "threshold", None),
+            window=int(plot_cfg.get("window", 300)),
+            refresh_every=1,
+            plot_score_key="p",  # IMPORTANT: engine emits p; do NOT pass anomaly_probability here
+            show_warmup_span=show_warmup_span,
+            record_dir=str(rec_dir) if (rec_enable and rec_dir) else None,
+            record_every=rec_every,
+            record_dpi=rec_dpi,
         )
+
     step_pause = float(plot_cfg.get("step_pause_s", 0.0) or 0.0)
 
     outp = run_paths.out_csv
@@ -361,6 +533,7 @@ def main() -> None:
             g,
             fieldnames=[
                 "t", "timestamp", "model",
+                "in_warmup", "learn",
                 "raw", "p", "likelihood", "score",
                 "system_score", "alert",
                 "hot_by_model",
@@ -368,7 +541,7 @@ def main() -> None:
         )
         w.writeheader()
 
-        def on_update(t, rows_by_source, model_outputs, result):
+        def on_update(t, rows_by_source, model_outputs, result, *, in_warmup: bool, learn: bool):
             nonlocal seen_any, ts_first, ts_last, t_first, t_last
             ts_any = _ts_any(rows_by_source)
             if not seen_any:
@@ -400,22 +573,20 @@ def main() -> None:
                     values_by_model[model_name] = per_feat
 
                 # Ground truth per model (derived from the model's source labels)
-                gt_by_model: Optional[Dict[str, set]] = None
+                gt_by_model = None
                 if gt_by_source:
-                    gt_by_model = {}
-                    for model_name, srcs in model_sources.items():
-                        acc: Set[str] = set()
-                        for s in srcs:
-                            sgt = gt_by_source.get(s)
-                            if sgt:
-                                acc.update(sgt)
-                        if acc:
-                            gt_by_model[model_name] = acc
+                    gt_by_model = {
+                        model_name: set().union(*[gt_by_source[s] for s in srcs if s in gt_by_source])
+                        for model_name, srcs in model_sources.items()
+                    }
+                    gt_by_model = {m: g for m, g in gt_by_model.items() if g}
 
                 plot_row: Dict[str, Any] = {
                     "timestamp": _ts_any(rows_by_source),
                     "values_by_model": values_by_model,
                     "gt_by_model": gt_by_model,
+                    "gt_system": system_gt_ts,
+                    "in_warmup": bool(in_warmup),
                 }
                 plot.update(t, plot_row, model_outputs, result)
                 if step_pause > 0:
@@ -427,8 +598,7 @@ def main() -> None:
             hot_by_model_json = json.dumps(hot_by_model, sort_keys=True) if hot_by_model is not None else None
 
             # write one line per model output
-            score_key = getattr(decision, "score_key", None)
-            score_key = score_key if isinstance(score_key, str) and score_key else "p"
+            score_key = decision_score_key_engine
             for model_name, out in model_outputs.items():
                 score_val = out.get(score_key)
                 w.writerow(
@@ -436,6 +606,8 @@ def main() -> None:
                         "t": t,
                         "timestamp": ts_any,
                         "model": model_name,
+                        "in_warmup": int(bool(in_warmup)),
+                        "learn": int(bool(learn)),
                         "raw": out.get("raw"),
                         "p": out.get("p"),
                         "likelihood": out.get("likelihood"),
@@ -446,8 +618,20 @@ def main() -> None:
                     }
                 )
 
-        for _ in run(stream, engine, decision, on_update=on_update):
+        for _ in run(
+            stream,
+            engine,
+            decision,
+            on_update=on_update,
+            diag=diag,
+            warmup_steps=warmup_steps,
+            learn_after_warmup=learn_after_warmup,
+        ):
             pass
+
+    # close diag handles
+    for h in diag_handles.values():
+        h.close()
 
     print(f"[run] wrote -> {outp}")
     # Write companion manifest JSON next to the CSV for downstream analyze_run / README snapshots.
@@ -467,10 +651,32 @@ def main() -> None:
             t_max=t_last,
             ts_start=ts_first,
             ts_end=ts_last,
+            warmup_steps=warmup_steps,
+            learn_after_warmup=learn_after_warmup,
+            decision_score_key_effective=decision_score_key_effective,
         )
         print(f"[run] wrote -> {mp}")
     else:
         print("[run] warning: no rows processed; manifest not written.")
+
+    # --- Post-run analysis (artifact-first) ---
+    # Default behavior: if --run-dir is used, emit analysis unless explicitly disabled.
+    should_analyze = (run_paths.analysis_dir is not None) and (not bool(args.no_analyze))
+    if should_analyze:
+        out_dir = run_paths.analysis_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        df = _load_run_csv(str(outp))
+        _summarize_run(
+            df,
+            config_path=args.config,
+            out_dir=str(out_dir),
+            max_lag_steps=int(args.analyze_max_lag_steps),
+            threshold_override=None,
+            prefer_hot_by_model=True,
+            strict=(not bool(args.analyze_non_strict)),
+        )
+        print(f"[run] wrote -> {out_dir / 'run_summary.json'}")
+        print(f"[run] wrote -> {out_dir / 'run_summary.md'}")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from htm_monitor.htm_src.htm_model import HTMmodel
+from htm_monitor.diagnostics.run_diagnostics import RunDiagnostics
 
 
 @dataclass(frozen=True)
@@ -40,8 +41,8 @@ class Engine:
                 raise ValueError(f"Model '{m}' has no sources configured")
             if m not in self.model_features or not self.model_features[m]:
                 raise ValueError(f"Model '{m}' has no features configured")
-            if "timestamp" not in self.model_features[m]:
-                raise ValueError(f"Model '{m}' features must include 'timestamp'")
+            # if "timestamp" not in self.model_features[m]:
+            #     raise ValueError(f"Model '{m}' features must include 'timestamp'")
 
     @staticmethod
     def _current_timestamp(rows_by_source: Mapping[str, Mapping[str, Any]]) -> Optional[str]:
@@ -104,7 +105,14 @@ class Engine:
 
         return filled
 
-    def step(self, rows_by_source: Mapping[str, Mapping[str, Any]], timestep: int) -> Dict[str, Dict[str, Any]]:
+    def step(
+        self,
+        rows_by_source: Mapping[str, Mapping[str, Any]],
+        timestep: int,
+        *,
+        diag: Optional[RunDiagnostics] = None,
+        learn: bool = True,
+    ) -> Dict[str, Dict[str, Any]]:
         outputs: Dict[str, Dict[str, Any]] = {}
 
         for name, model in self.models.items():
@@ -112,11 +120,46 @@ class Engine:
             if merged is None:
                 continue
 
-            raw, likelihood, pcount = model.run(
-                features_data=merged,
-                timestep=timestep,
-                learn=True,
-            )
+            if diag is not None and (diag.encoding_writer is not None or diag.tm_writer is not None):
+                raw, likelihood, pcount, diag_payload = model.run_with_diagnostics(
+                    features_data=merged,
+                    timestep=timestep,
+                    learn=bool(learn),
+                )
+                # per-feature encoding evidence
+                if diag.encoding_writer is not None:
+                    for feat_name, ed in (diag_payload.get("encodings") or {}).items():
+                        diag.record_encoding(
+                            t=timestep,
+                            model=name,
+                            feature=feat_name,
+                            value=ed.get("value"),
+                            sdr=ed.get("sdr"),
+                            resolution=ed.get("resolution"),
+                            min_val=ed.get("min_val"),
+                            approx_bucket=ed.get("approx_bucket"),
+                        )
+                # tm evidence
+                if diag.tm_writer is not None:
+                    tm = diag_payload.get("tm") or {}
+                    diag.record_tm(
+                        t=timestep,
+                        model=name,
+                        raw_anomaly=float(raw) if isinstance(raw, (int, float)) else None,
+                        pred_cells_prior=tm.get("pred_cells_prior"),
+                        active_cells=tm.get("active_cells"),
+                        winner_cells=tm.get("winner_cells"),
+                        active_cols=tm.get("active_cols"),
+                        pred_cols_prior_count=tm.get("pred_cols_prior_count"),
+                        pred_col_hit_rate=tm.get("pred_col_hit_rate"),
+                        burst_frac=tm.get("burst_frac"),
+                    )
+            else:
+                raw, likelihood, pcount = model.run(
+                    features_data=merged,
+                    timestep=timestep,
+                    learn=bool(learn),
+                )
 
             # These are stable for HTMmodel; for test stubs they can be absent (so: None)
             p = model.last_anomaly_probability() if hasattr(model, "last_anomaly_probability") else None

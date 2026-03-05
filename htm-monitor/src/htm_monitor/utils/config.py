@@ -128,6 +128,8 @@ def build_from_config(defaults_path: str, user_path: str):
             "decision",
             "plot",
             "calibration",
+            "run",
+            "ground_truth",
         },
     )
 
@@ -222,7 +224,7 @@ def build_from_config(defaults_path: str, user_path: str):
         k=dcfg.get("k"),
         window_size=window_size,
         per_model_hits=per_model_hits,
-        score_key=str(dcfg.get("score_key", "likelihood")),
+        score_key=str(dcfg.get("score_key", "p")),
     )
 
     return cfg, engine, decision, model_sources

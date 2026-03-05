@@ -1,4 +1,4 @@
-# src/demo/usecase_wizard.py
+# src/htm-monitor/cli/usecase_wizard.py
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from typing import Any, Dict, List, Optional, Mapping
 
 import yaml
 
-from demo.make_usecase_config import build_usecase_config, collect_sources_interactive, sources_from_dicts, sources_to_dicts
-from demo.encoding_sanity import summarize_range, write_linear_hist_png
+from .make_usecase_config import build_usecase_config, collect_sources_interactive, sources_from_dicts, sources_to_dicts
+from htm_monitor.diagnostics.encoding_sanity import summarize_range, write_linear_hist_png
 
 
 @dataclass(frozen=True)
@@ -192,6 +192,17 @@ def run_interactive() -> UsecaseBuildSpec:
     decision_threshold = _prompt_float("decision.threshold", 0.997)
     decision_score_key = _prompt("decision.score_key", "anomaly_probability")
 
+    print("\n--- Run lifecycle (warmup + learn policy) ---")
+    run_warmup_steps = _prompt_int("run.warmup_steps (timesteps; 0 disables warmup)", 0)
+    run_learn_after_warmup = (
+        _prompt_choice(
+            "run.learn_after_warmup (true|false)",
+            ["true", "false"],
+            "true",
+        )
+        == "true"
+    )
+
     params: Dict[str, Any] = dict(
         rdse_size=rdse_size,
         rdse_active_bits=rdse_active_bits,
@@ -208,6 +219,8 @@ def run_interactive() -> UsecaseBuildSpec:
         decision_per_model_hits=decision_per_model_hits,
         decision_threshold=decision_threshold,
         decision_score_key=decision_score_key,
+        run_warmup_steps=run_warmup_steps,
+        run_learn_after_warmup=run_learn_after_warmup,
     )
     _validate_params_mapping(params)
 
