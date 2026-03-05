@@ -72,7 +72,7 @@ python quickstart.py --usecase demo_synth --mode synth --run-id run_001 --make-g
 ```
 
 What it does:
-1. generates synthetic proof data with subtle injected anomalies
+1. generates synthetic data with subtle injected anomalies
 2. builds a demo config (`configs/demo_synth.yaml`)
 3. runs the pipeline (optionally showing the live plot)
 4. analyzes results + writes a scorecard

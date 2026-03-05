@@ -2,7 +2,7 @@
 """quickstart.py
 
 One-command demo runner for HTM-Monitor:
-  1) (optional) generate synthetic proof data
+  1) (optional) generate synthetic demo data
   2) build a usecase config (non-interactive for synthetic; interactive wizard for real datasets)
   3) run pipeline (includes live plot if enabled in config)
   4) analyze run + render an intuitive system-eval scorecard (✅ detected / ❌ missed)
@@ -475,13 +475,13 @@ def render_run_overview(run_dir: Path) -> Optional[Path]:
     return out_png
 
 
-def _resolve_data_dir(repo: Path, proof_dir_arg: str, usecase: str) -> Path:
+def _resolve_data_dir(repo: Path, demo_dir_arg: str, usecase: str) -> Path:
     """
     Accept either:
-      --proof-dir data            -> data/<usecase>
-      --proof-dir data/demo_synth -> data/demo_synth
+      --demo-dir data            -> data/<usecase>
+      --demo-dir data/demo_synth -> data/demo_synth
     """
-    p = (repo / proof_dir_arg).resolve()
+    p = (repo / demo_dir_arg).resolve()
     if p.name == usecase:
         return p
     return (p / usecase).resolve()
@@ -495,7 +495,7 @@ def main() -> None:
     ap.add_argument("--repo-root", default=".")
     ap.add_argument("--defaults", default="configs/htm_defaults.yaml")
     ap.add_argument("--config-dir", default="configs")
-    ap.add_argument("--proof-dir", default="data")
+    ap.add_argument("--demo-dir", default="data")
     ap.add_argument("--no-open", action="store_true")
     ap.add_argument("--no-plot", action="store_true")
     ap.add_argument("--make-gif", action="store_true", help="Record live plot frames and build assets/live_demo.gif")
@@ -518,7 +518,7 @@ def main() -> None:
 
     repo = Path(args.repo_root).resolve()
     config_dir = (repo / args.config_dir).resolve()
-    proof_dir = _resolve_data_dir(repo, args.proof_dir, args.usecase)
+    demo_dir = _resolve_data_dir(repo, args.demo_dir, args.usecase)
     defaults_path = (repo / args.defaults).resolve()
 
     usecase = args.usecase
@@ -531,11 +531,11 @@ def main() -> None:
     docs_dir.mkdir(parents=True, exist_ok=True)
 
     if args.mode == "synth":
-        # 1) Generate proof data (faster repeat + less noise)
+        # 1) Generate demo data (faster repeat + less noise)
         sh(
             [
-                sys.executable, "-m", "src.demo.make_proof_data",
-                "--out-dir", str(proof_dir),
+                sys.executable, "-m", "src.demo.make_data",
+                "--out-dir", str(demo_dir),
                 "--baseline-drift", "0.0",
                 "--baseline-noise-frac", str(args.baseline_noise_frac),
                 "--baseline-noise-phi", str(args.baseline_noise_phi),
@@ -566,11 +566,11 @@ def main() -> None:
             cwd=repo,
         )
 
-        gt_json = proof_dir / "gt_timestamps.json"
+        gt_json = demo_dir / "gt_timestamps.json"
         synth_sources = [
-            SynthSource(name="sA", csv_path=proof_dir / "sA.csv", feature="sA", gt_timestamps_json=gt_json),
-            SynthSource(name="sB", csv_path=proof_dir / "sB.csv", feature="sB", gt_timestamps_json=gt_json),
-            SynthSource(name="sC", csv_path=proof_dir / "sC.csv", feature="sC", gt_timestamps_json=gt_json),
+            SynthSource(name="sA", csv_path=demo_dir / "sA.csv", feature="sA", gt_timestamps_json=gt_json),
+            SynthSource(name="sB", csv_path=demo_dir / "sB.csv", feature="sB", gt_timestamps_json=gt_json),
+            SynthSource(name="sC", csv_path=demo_dir / "sC.csv", feature="sC", gt_timestamps_json=gt_json),
         ]
 
         # Hard defaults for synth (kept explicit so you can reason about them)

@@ -1,4 +1,4 @@
-#src/demo/make_proof_data.py
+#src/demo/make_data.py
 
 from __future__ import annotations
 
@@ -360,7 +360,7 @@ def main():
     # ===============================
 
     print(
-        f"[proof] freq={args.freq} => steps_per_hour={steps_per_hour}, "
+        f"[demo] freq={args.freq} => steps_per_hour={steps_per_hour}, "
         f"period_hours={args.baseline_period_hours} => period_steps={period_steps}, "
         f"hours={args.hours} => n={n}, "
         f"settle_hours={args.settle_hours} => settle_steps={settle_steps}"
@@ -570,14 +570,14 @@ def main():
             ax.axvspan(ts[w.start], ts[w.end], alpha=0.2)
         ax.set_ylabel(name)
 
-    axes[0].set_title("Proof-mode signals")
-    p_out = str((out_dir / "proof.png").resolve())
+    axes[0].set_title("Demo-mode signals")
+    p_out = str((out_dir / "demo.png").resolve())
     plt.tight_layout()
     plt.savefig(p_out, dpi=150)
     plt.close()
 
     print(f"Wrote CSVs to {out_dir.resolve()}")
-    print("Generated proof.png")
+    print("Generated demo.png")
 
 
 if __name__ == "__main__":
