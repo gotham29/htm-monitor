@@ -18,4 +18,10 @@ venv/
 # generated demo artifacts (do not commit)
 data/**/demo*.png
 data/**/frames/
-assets/live_demo.gif
+
+# packaging artifacts
+*.egg-info/
+
+# datasets
+data/
+
