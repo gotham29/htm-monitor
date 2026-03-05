@@ -16,6 +16,6 @@ venv/
 *.mov
 
 # generated demo artifacts (do not commit)
-data/**/demo.png
+data/**/demo*.png
 data/**/frames/
 assets/live_demo.gif
