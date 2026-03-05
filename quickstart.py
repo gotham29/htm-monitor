@@ -498,8 +498,8 @@ def main() -> None:
     ap.add_argument("--demo-dir", default="data")
     ap.add_argument("--no-open", action="store_true")
     ap.add_argument("--no-plot", action="store_true")
-    ap.add_argument("--make-gif", action="store_true", help="Record live plot frames and build assets/live_demo.gif")
-    ap.add_argument("--gif-fps", type=int, default=24, help="FPS for assets/live_demo.gif")
+    ap.add_argument("--make-gif", action="store_true", help="Record live plot frames and build assets/demo_synth.gif")
+    ap.add_argument("--gif-fps", type=int, default=24, help="FPS for assets/demo_synth.gif")
     ap.add_argument("--docs-dir", default="assets", help="Where README assets are written (gif + images)")
 
     # Synthetic generator knobs (fast repeat + low noise)
@@ -716,7 +716,7 @@ def main() -> None:
     # 6) README assets: GIF + images into docs/
     if args.make_gif and (not args.no_plot):
         frames_dir = out_dir / "analysis" / "frames"
-        out_gif = docs_dir / "live_demo.gif"
+        out_gif = docs_dir / "demo_synth.gif"
         _write_gif_from_frames(frames_dir, out_gif, fps=int(args.gif_fps))
 
     # Copy scorecard + overview to assets/ for stable README paths
@@ -732,7 +732,7 @@ def main() -> None:
     if ov:
         print(f"  overview: {ov}")
     if args.make_gif and (not args.no_plot):
-        print(f"  gif    : {docs_dir / 'live_demo.gif'}")
+        print(f"  gif    : {docs_dir / 'demo_synth.gif'}")
 
 
 if __name__ == "__main__":
