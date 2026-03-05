@@ -4,7 +4,7 @@ Real-time anomaly detection for streaming time series using **Hierarchical Tempo
 
 HTM-Monitor learns normal behavior from live signals and detects structural deviations **in real time**, converting per-signal anomaly probabilities into a single **system-level alert** for the monitored system.
 
-![Live demo](assets/demo_synth.mp4)
+![Live demo](assets/demo_synth.gif)
 
 Signals stream in → HTM learns normal behavior online → anomaly probability rises → a **system alert** triggers.
 
