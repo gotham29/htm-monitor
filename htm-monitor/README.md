@@ -2,42 +2,75 @@
 
 Real-time anomaly detection for streaming time series using **Hierarchical Temporal Memory (HTM)**.
 
-HTM-Monitor is built for “monitoring” style problems:
-- you have one or more signals streaming over time
-- the system learns the normal pattern online
-- it produces per-signal anomaly probabilities
-- it converts those into a single **system alert**
+HTM-Monitor learns normal behavior from live signals and detects structural deviations **in real time**, converting per-signal anomaly probabilities into a single **system-level alert** for the monitored system.
+
+![Live demo](assets/live_demo.gif)
+
+Signals stream in → HTM learns normal behavior online → anomaly probability rises → a **system alert** triggers.
+
+*Example: three signals monitored simultaneously with overlapping anomaly events.*
+
+---
+
+## Where this is useful
+
+HTM-Monitor is designed for **systems where behavior unfolds over time** and deviations matter more than static thresholds.
+
+Typical applications include:
+
+- **Industrial monitoring** — machines, manufacturing lines, process signals  
+- **Infrastructure monitoring** — servers, cloud systems, observability metrics  
+- **Cybersecurity signals** — network traffic or behavioral indicators  
+- **IoT / sensor networks** — multi-sensor environments with evolving patterns
+
+Unlike many anomaly detection systems, HTM learns **temporal structure online** and adapts continuously as new data arrives.
+
+---
+
+## How HTM differs from typical anomaly detection
+
+Many anomaly detection systems rely on approaches such as:
+
+- static thresholds
+- batch-trained statistical models
+- or models that must be retrained when behavior shifts
+
+HTM takes a different approach. It is designed for **continuous learning on streaming data**.
+
+Key differences:
+
+- **Online learning** — the model updates continuously as new data arrives  
+- **Temporal memory** — it learns sequences and transitions, not just value distributions  
+- **No retraining cycles** — the system adapts automatically as patterns evolve  
+- **Multi-signal monitoring** — signals can be combined into a single system-level alert
+
+This makes HTM particularly well suited for systems where anomalies appear as **changes in temporal structure**, not just extreme values.
 
 ---
 
 ## Live demo (streaming detection)
 
-> This is the primary “what it does” view: signals stream in, HTM learns normal behavior,
-> anomalies begin, probabilities rise, and a system alert triggers.
-
-![Live demo](assets/live_demo.gif)
-
-Legend (what you’re seeing):
-- **value(s)**: incoming signal values
-- **HTM raw anomaly score**: the raw HTM anomaly signal (noisy but useful)
-- **HTM anomaly probability**: the main interpretable score (0..1)
-- **pink spans**: model is “hot” (above decision threshold / counted as suspicious)
-- **purple dotted lines**: ground truth anomaly timestamps
-- **system alert**: final decision combining models
+**Legend**
+- **value(s)** — incoming signal values
+- **HTM raw anomaly score** — raw HTM anomaly signal
+- **HTM anomaly probability** — interpretable score (0..1)
+- **pink spans** — model considered “hot”
+- **purple dotted lines** — ground-truth anomaly timestamps
+- **system alert** — final decision combining models
 
 ---
 
-## System evaluation (did it detect the known events?)
+## System evaluation
 
-This run is scored against known ground-truth anomaly timestamps.
+This example run is scored against known ground-truth anomaly timestamps.
 
 ![System eval scorecard](assets/system_eval_scorecard.png)
 
-And here’s a static overview plot for the same run (useful when you don’t want animation):
+Static overview of the same run:
 
 ![Run overview](assets/run_overview.png)
 
-Artifacts are written to a run directory:
+Each run produces a self-contained directory:
 
 ```
 outputs/<usecase>/<run_id>/
@@ -48,10 +81,10 @@ outputs/<usecase>/<run_id>/
     run_summary.md
 ```
 
-That means runs are:
+Runs are therefore:
 - reproducible
 - easy to diff
-- easy to share (send the run folder)
+- easy to share (just send the run folder)
 
 ---
 
@@ -71,12 +104,12 @@ pip install -r requirements.txt
 python quickstart.py --usecase demo_synth --mode synth --run-id run_001 --make-gif
 ```
 
-What it does:
-1. generates synthetic data with subtle injected anomalies
-2. builds a demo config (`configs/demo_synth.yaml`)
-3. runs the pipeline (optionally showing the live plot)
-4. analyzes results + writes a scorecard
-5. (optional) records frames and writes `assets/live_demo.gif`
+This will:
+1. generate synthetic data with subtle injected anomalies
+2. build a demo config (`configs/demo_synth.yaml`)
+3. run the pipeline
+4. analyze results
+5. optionally record frames and write assets/live_demo.gif
 
 Outputs you’ll care about:
 - `assets/live_demo.gif` *(README asset)*
@@ -114,15 +147,15 @@ Then it runs:
 
 ## How “system alerts” are computed
 
-The repo separates concerns:
-- **Engine**: produces per-model anomaly scores/probabilities
-- **Decision**: converts those into:
+The system separates:
+- **Engine** — produces per-model anomaly probabilities
+- **Decision** — converts those into:
   - per-model “hot” status
   - a final **system alert**
 
 In the demo config we use a *k-of-n window* decision:
-- consider each model hot if it exceeds a probability threshold enough times
-- trigger system alert if at least **k** models are hot within a sliding window
+- a model becomes hot if its probability exceeds a threshold enough times
+- system alert triggers if at least **k** models are hot within a sliding window
 
 This gives you:
 - robustness to single-sensor noise
@@ -160,8 +193,8 @@ python quickstart.py --usecase demo_synth --run-id run_001 --no-plot
 
 You’ll still get:
 - `outputs/.../analysis/run_summary.md`
-- `docs/system_eval_scorecard.png`
-- `docs/run_overview.png`
+- `outputs/.../analysis/system_eval_scorecard.png`
+- `outputs/.../analysis/run_overview.png`
 
 ---
 
