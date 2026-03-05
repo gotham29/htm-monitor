@@ -4,7 +4,7 @@ Real-time anomaly detection for streaming time series using **Hierarchical Tempo
 
 HTM-Monitor learns normal behavior from live signals and detects structural deviations **in real time**, converting per-signal anomaly probabilities into a single **system-level alert** for the monitored system.
 
-![Live demo](assets/live_demo.gif)
+![Live demo](assets/demo_synth.gif)
 
 Signals stream in → HTM learns normal behavior online → anomaly probability rises → a **system alert** triggers.
 
@@ -109,10 +109,10 @@ This will:
 2. build a demo config (`configs/demo_synth.yaml`)
 3. run the pipeline
 4. analyze results
-5. optionally record frames and write assets/live_demo.gif
+5. optionally record frames and write assets/demo_synth.gif
 
 Outputs you’ll care about:
-- `assets/live_demo.gif` *(README asset)*
+- `assets/demo_synth.gif` *(README asset)*
 - `assets/system_eval_scorecard.png` *(README asset)*
 - `assets/run_overview.png` *(README asset)*
 
