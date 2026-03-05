@@ -17,3 +17,6 @@ outputs/
 # OS/editor
 .DS_Store
 *.mp4
+
+# generated demo artifacts
+/data/**/demo.png
