@@ -1,11 +1,13 @@
-# src/demo/make_usecase_config.py
+# src/htm-monitor/cli/make_usecase_config.py
 
 from __future__ import annotations
 
 import argparse
+import json
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Mapping
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Mapping, Set
 
 import pandas as pd
 import yaml
@@ -30,6 +32,8 @@ class SourceSpec:
     timestamp_format: str
     # canonical_feature_name -> csv_column_name
     fields: Dict[str, str]
+    # Optional ground-truth timestamps (strings matching timestamp_format).
+    gt_timestamps: Optional[List[str]] = None
 
     def __post_init__(self) -> None:
         # Fail fast: prevent configs that "serialize fine" but explode later.
@@ -68,6 +72,16 @@ class SourceSpec:
             seen_feat.add(feat)
             seen_cols.add(col)
 
+        if self.gt_timestamps is not None:
+            if not isinstance(self.gt_timestamps, list):
+                raise TypeError("SourceSpec.gt_timestamps must be a list[str] or None")
+            bad = [x for x in self.gt_timestamps if not isinstance(x, str) or not x.strip()]
+            if bad:
+                raise TypeError("SourceSpec.gt_timestamps entries must be non-empty strings")
+            # validate parse against this source's timestamp_format
+            for ts in self.gt_timestamps:
+                datetime.strptime(ts, self.timestamp_format)
+
 
 def _write_text_atomic(path: Path, text: str) -> None:
     path = Path(path)
@@ -102,6 +116,7 @@ def sources_to_dicts(sources: Sequence[SourceSpec]) -> List[Dict[str, Any]]:
                 "timestamp_col": s.timestamp_col,
                 "timestamp_format": s.timestamp_format,
                 "fields": dict(s.fields),
+                "gt_timestamps": list(s.gt_timestamps) if s.gt_timestamps else None,
             }
         )
     return out
@@ -118,6 +133,31 @@ def sources_from_dicts(raw: Sequence[Mapping[str, Any]]) -> List[SourceSpec]:
         fields = d.get("fields")
         if not isinstance(fields, Mapping) or len(fields) == 0:
             raise ValueError(f"sources[{i}].fields must be a non-empty mapping")
+
+        # Ground-truth timestamps can arrive in either format:
+        #   legacy:   gt_timestamps: ["...", ...]
+        #   canonical: labels: { timestamps: ["...", ...] }
+        # We normalize both into SourceSpec.gt_timestamps.
+        has_legacy_gt = "gt_timestamps" in d and d.get("gt_timestamps") is not None
+        has_labels = "labels" in d and d.get("labels") is not None
+        if has_legacy_gt and has_labels:
+            raise ValueError(f"sources[{i}] cannot contain both 'gt_timestamps' and 'labels' (ambiguous GT format)")
+
+        gt_list: Optional[List[str]] = None
+        if has_legacy_gt:
+            gt_raw = d.get("gt_timestamps")
+            if not isinstance(gt_raw, list) or not all(isinstance(x, str) and x.strip() for x in gt_raw):
+                raise ValueError(f"sources[{i}].gt_timestamps must be a list of non-empty timestamp strings")
+            gt_list = list(gt_raw) or None
+        elif has_labels:
+            labels = d.get("labels")
+            if not isinstance(labels, Mapping):
+                raise ValueError(f"sources[{i}].labels must be a mapping if provided")
+            ts = labels.get("timestamps")
+            if ts is not None:
+                if not isinstance(ts, list) or not all(isinstance(x, str) and x.strip() for x in ts):
+                    raise ValueError(f"sources[{i}].labels.timestamps must be a list of non-empty timestamp strings")
+                gt_list = list(ts) or None
         # YAML foot-gun: non-string keys can appear; reject early.
         bad_field_keys = [k for k in fields.keys() if not isinstance(k, str)]
         if bad_field_keys:
@@ -129,6 +169,7 @@ def sources_from_dicts(raw: Sequence[Mapping[str, Any]]) -> List[SourceSpec]:
                 timestamp_col=str(d["timestamp_col"]).strip(),
                 timestamp_format=str(d["timestamp_format"]).strip(),
                 fields=dict(fields),
+                gt_timestamps=gt_list,
             )
         )
     return out
@@ -173,6 +214,9 @@ def calibrate_min_max(
     low_q: float = 0.01,
     high_q: float = 0.99,
     margin: float = 0.03,
+    *,
+    floor: Optional[float] = None,
+    ceil: Optional[float] = None,
 ) -> Tuple[float, float]:
     if not (0.0 < low_q < high_q < 1.0):
         raise ValueError("low_q/high_q must satisfy 0 < low_q < high_q < 1")
@@ -188,10 +232,28 @@ def calibrate_min_max(
         # Degenerate: constant or near-constant series.
         # Keep a tiny span so RDSE has a non-zero range.
         eps = max(abs(lo) * 1e-6, 1e-6)
-        return lo - eps, hi + eps
+        mn = lo - eps
+        mx = hi + eps
+        if floor is not None:
+            mn = max(mn, float(floor))
+        if ceil is not None:
+            mx = min(mx, float(ceil))
+        if mx <= mn:
+            eps2 = max(abs(mn) * 1e-6, 1e-6)
+            mn, mx = mn - eps2, mx + eps2
+        return mn, mx
 
     pad = margin * span
-    return lo - pad, hi + pad
+    mn = lo - pad
+    mx = hi + pad
+    if floor is not None:
+        mn = max(mn, float(floor))
+    if ceil is not None:
+        mx = min(mx, float(ceil))
+    if mx <= mn:
+        eps2 = max(abs(mn) * 1e-6, 1e-6)
+        mn, mx = mn - eps2, mx + eps2
+    return mn, mx
 
 
 def build_usecase_config(
@@ -207,6 +269,9 @@ def build_usecase_config(
     low_q: float = 0.01,
     high_q: float = 0.99,
     margin: float = 0.03,
+    # optional calibration clamps (e.g., counts -> floor=0)
+    calibration_min_floor: Optional[float] = None,
+    calibration_max_ceil: Optional[float] = None,
     # model layout
     #   separate: one model per feature
     #   single: one model containing all features
@@ -223,11 +288,20 @@ def build_usecase_config(
     decision_k: int = 2,
     decision_window_size: int = 24,
     decision_per_model_hits: int = 2,
+    # run lifecycle defaults
+    run_warmup_steps: int = 0,
+    run_learn_after_warmup: bool = True,
+    # system-GT derivation defaults (separate from decision semantics)
+    gt_system_window_size: Optional[int] = None,
+    gt_system_per_source_hits: int = 1,
     # plot defaults
     plot_enable: bool = True,
     plot_window: int = 1000,
     plot_show_ground_truth: bool = True,
     plot_step_pause_s: float = 0.01,
+    plot_show_warmup_span: bool = True,
+    # optional frozen overrides (picked once via wizard)
+    feature_overrides: Optional[Mapping[str, Mapping[str, float]]] = None,
 ) -> Dict[str, Any]:
     if not usecase or not isinstance(usecase, str):
         raise ValueError("usecase must be a non-empty string")
@@ -258,6 +332,14 @@ def build_usecase_config(
     decision_threshold = float(decision_threshold)
     if not (0.0 <= decision_threshold <= 1.0):
         raise ValueError("decision_threshold must be in [0, 1]")
+    run_warmup_steps = int(run_warmup_steps)
+    if run_warmup_steps < 0:
+        raise ValueError("run_warmup_steps must be >= 0")
+    run_learn_after_warmup = bool(run_learn_after_warmup)
+
+    gt_system_per_source_hits = int(gt_system_per_source_hits)
+    if gt_system_per_source_hits <= 0:
+        raise ValueError("gt_system_per_source_hits must be > 0")
 
     # ---- Features ----
     features: Dict[str, Any] = {
@@ -294,7 +376,23 @@ def build_usecase_config(
             if feat_name in features:
                 raise ValueError(f"Duplicate feature name '{feat_name}' across sources. Feature names must be unique.")
             s = _read_series(src.path, col_name)
-            mn, mx = calibrate_min_max(s, low_q=low_q, high_q=high_q, margin=margin)
+            mn, mx = calibrate_min_max(
+                s,
+                low_q=low_q,
+                high_q=high_q,
+                margin=margin,
+                floor=calibration_min_floor,
+                ceil=calibration_max_ceil,
+            )
+
+            if feature_overrides is not None and feat_name in feature_overrides:
+                ov = feature_overrides.get(feat_name) or {}
+                if "minVal" in ov:
+                    mn = float(ov["minVal"])
+                if "maxVal" in ov:
+                    mx = float(ov["maxVal"])
+                if float(mx) <= float(mn):
+                    raise ValueError(f"feature_overrides for '{feat_name}' invalid: maxVal must be > minVal")
 
             features[feat_name] = {
                 "type": "float",
@@ -353,9 +451,30 @@ def build_usecase_config(
                 "timestamp_col": src.timestamp_col,
                 "timestamp_format": src.timestamp_format,
                 "fields": dict(src.fields),
-                # labels can be added later by hand or by a future “label import” step
+                **(
+                    {"labels": {"timestamps": list(src.gt_timestamps)}}
+                    if src.gt_timestamps
+                    else {}
+                ),
             }
         )
+
+    # Emit ground_truth only when at least one source has labels.
+    has_any_gt = any(bool(s.gt_timestamps) for s in sources)
+    ground_truth: Optional[Dict[str, Any]] = None
+    if has_any_gt:
+        ground_truth = {
+            "system": {
+                "method": "kofn_window",
+                "k": int(decision_k),
+                "window": {
+                    "size": int(gt_system_window_size)
+                    if gt_system_window_size is not None
+                    else int(decision_window_size),
+                    "per_source_hits": int(gt_system_per_source_hits),
+                },
+            }
+        }
 
     cfg: Dict[str, Any] = {
         "features": features,
@@ -366,6 +485,11 @@ def build_usecase_config(
                 "on_missing": str(on_missing),
             },
             "sources": data_sources,
+        },
+        "run": {
+            # Canonical run lifecycle keys consumed by run_pipeline.
+            "warmup_steps": int(run_warmup_steps),
+            "learn_after_warmup": bool(run_learn_after_warmup),
         },
         "decision": {
             "score_key": str(decision_score_key),
@@ -382,8 +506,12 @@ def build_usecase_config(
             "step_pause_s": float(plot_step_pause_s),
             "window": int(plot_window),
             "show_ground_truth": bool(plot_show_ground_truth),
+            "show_warmup_span": bool(plot_show_warmup_span),
         },
     }
+
+    if ground_truth is not None:
+        cfg["ground_truth"] = ground_truth
 
     return cfg
 
@@ -424,6 +552,59 @@ def _prompt_choice(msg: str, choices: Sequence[str], default: str) -> str:
 def _parse_csv_list(raw: str) -> List[str]:
     items = [x.strip() for x in (raw or "").split(",")]
     return [x for x in items if x]
+
+
+def _parse_ts_list(raw: str) -> List[str]:
+    # comma-separated list of timestamps
+    items = [x.strip() for x in (raw or "").split(",")]
+    return [x for x in items if x]
+
+
+def _validate_gt_timestamps(ts_list: List[str], ts_format: str) -> List[str]:
+    # de-dupe but preserve order (stable)
+    seen: Set[str] = set()
+    out: List[str] = []
+    for ts in ts_list:
+        datetime.strptime(ts, ts_format)  # raises if invalid
+        if ts not in seen:
+            seen.add(ts)
+            out.append(ts)
+    return out
+
+
+def _load_gt_from_file(spec: str, *, source_name: str, default_key: str) -> Optional[List[str]]:
+    """
+    Support wizard input:
+      Ground truth timestamps: @file:/path/to/gt_timestamps.json
+
+    Accepted JSON shapes:
+      - list[str]
+      - {"timestamps": [...]}  (generic)
+      - {"sA": [...], "sB": [...], ...} (keyed by source name)
+      - {"meta": {...}, "<key>": [...]} (we ignore meta)
+    """
+    raw = (spec or "").strip()
+    if not raw.startswith("@file:"):
+        return None
+    path = raw[len("@file:") :].strip()
+    if not path:
+        raise ValueError("GT file spec is empty; use @file:<path>")
+    p = Path(path)
+    if not p.exists() or not p.is_file():
+        raise ValueError(f"GT file does not exist: {p}")
+    blob = json.loads(p.read_text())
+    if isinstance(blob, list):
+        return [str(x) for x in blob]
+    if isinstance(blob, dict):
+        # prefer explicit per-source key, then default_key (stem), then 'timestamps'
+        for k in (source_name, default_key, "timestamps"):
+            v = blob.get(k)
+            if v is None:
+                continue
+            if not isinstance(v, list):
+                raise ValueError(f"GT file key '{k}' must be a list of timestamp strings")
+            return [str(x) for x in v]
+    raise ValueError("GT file must be a JSON list or object containing a timestamps list")
 
 
 def collect_sources_interactive() -> List[SourceSpec]:
@@ -468,6 +649,18 @@ def collect_sources_interactive() -> List[SourceSpec]:
         if not fields:
             raise ValueError("You must select at least one numeric column")
 
+        print("\n(Optional) Ground truth timestamps for this source.")
+        print("Enter comma-separated timestamps matching the timestamp format, or leave blank.")
+        print("Or: @file:<path/to/gt_timestamps.json> to load a list from file.")
+        raw_gt = _prompt("Ground truth timestamps", "")
+        gt = None
+        if raw_gt.strip():
+            loaded = _load_gt_from_file(raw_gt, source_name=name, default_key=p.stem)
+            if loaded is not None:
+                gt = _validate_gt_timestamps(loaded, ts_fmt)
+            else:
+                gt = _validate_gt_timestamps(_parse_ts_list(raw_gt), ts_fmt)
+
         out.append(
             SourceSpec(
                 name=name,
@@ -475,6 +668,7 @@ def collect_sources_interactive() -> List[SourceSpec]:
                 timestamp_col=ts_col,
                 timestamp_format=ts_fmt,
                 fields=fields,
+                gt_timestamps=gt,
             )
         )
     return out
@@ -512,6 +706,14 @@ def main() -> None:
     decision_threshold = _prompt_float("decision.threshold", 0.997)
     decision_score_key = _prompt("decision.score_key", "anomaly_probability")
 
+    print("\n--- Run lifecycle (warmup + learn policy) ---")
+    warmup_steps = _prompt_int("run.warmup_steps (timesteps; 0 disables warmup)", 0)
+    learn_after = _prompt_choice(
+        "run.learn_after_warmup (true|false)",
+        ["true", "false"],
+        "true",
+    ) == "true"
+
     cfg = build_usecase_config(
         usecase,
         sources,
@@ -530,6 +732,8 @@ def main() -> None:
         decision_per_model_hits=decision_per_model_hits,
         decision_threshold=decision_threshold,
         decision_score_key=decision_score_key,
+        run_warmup_steps=warmup_steps,
+        run_learn_after_warmup=learn_after,
     )
 
     out_dir = Path(args.out_dir)

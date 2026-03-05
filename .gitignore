@@ -1,6 +1,21 @@
-.DS_Store
+# outputs are always generated
+outputs/
+
+# python
 __pycache__/
 *.pyc
+
+# local envs
 .venv/
 venv/
-outputs/
+
+# mac
+.DS_Store
+
+# media (only ignore MOV; keep MP4 optional)
+*.mov
+
+# generated demo artifacts (do not commit)
+data/**/demo*.png
+data/**/frames/
+assets/live_demo.gif

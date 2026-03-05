@@ -5,3 +5,18 @@ __pycache__/
 venv/
 outputs/
 src/htm_monitor.egg-info/
+
+# Python
+__pycache__/
+*.pyc
+
+# Local outputs / run artifacts
+outputs/
+*.tmp
+
+# OS/editor
+.DS_Store
+*.mp4
+
+# generated demo artifacts
+/data/**/demo.png
