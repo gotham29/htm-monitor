@@ -745,6 +745,22 @@ def build_model_hot_mask(
 # Main summarize
 # -------------------------
 
+def _load_timebase_params(config_path: str) -> Dict[str, str]:
+    cfg = yaml.safe_load(Path(config_path).read_text())
+    if not isinstance(cfg, dict):
+        raise ValueError("config YAML must be a mapping at top-level")
+
+    tb = ((cfg.get("data") or {}).get("timebase") or {})
+    if not isinstance(tb, dict):
+        tb = {}
+
+    mode = str(tb.get("mode") or "union").strip() or "union"
+    on_missing = str(tb.get("on_missing") or "hold_last").strip() or "hold_last"
+    return {
+        "mode": mode,
+        "on_missing": on_missing,
+    }
+
 def summarize(
     df: pd.DataFrame,
     *,
@@ -776,6 +792,7 @@ def summarize(
     # Load contracts
     model_sources = _config_model_sources(config_path)
     decision = _load_decision_params(config_path)
+    timebase = _load_timebase_params(config_path)
     sys_gt_params = _load_system_gt_params(config_path, decision)
     gt_ts_by_source = _config_gt_onsets_by_source(config_path)
 
@@ -891,6 +908,10 @@ def summarize(
             "start": str(one_eval["ts"].min()),
             "end": str(one_eval["ts"].max()),
         },
+        "timebase": {
+            "mode": timebase["mode"],
+            "on_missing": timebase["on_missing"],
+         },
         "step_minutes_inferred": step_minutes,
         "decision": {
             "method": decision.method,
