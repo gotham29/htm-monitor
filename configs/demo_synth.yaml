@@ -101,7 +101,7 @@ decision:
     size: 24
     per_model_hits: 2
 plot:
-  enable: true
+  enable: false
   step_pause_s: 0.01
   window: 300
   show_ground_truth: true
