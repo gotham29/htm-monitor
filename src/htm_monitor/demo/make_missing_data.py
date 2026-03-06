@@ -72,7 +72,7 @@ def inject_sparse_missing(df, frac, rng):
     n = len(df)
     k = int(n * frac)
 
-    idx = rng.sample(range(n), k)
+    idx = sorted(rng.sample(range(n), k))
 
     df.loc[idx, "value"] = ""
     return idx
