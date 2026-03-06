@@ -4,47 +4,22 @@ Real-time anomaly detection for streaming time series using **Hierarchical Tempo
 
 HTM-Monitor learns normal behavior from live signals and detects structural deviations **in real time**, converting per-signal anomaly probabilities into a single **system-level alert** for the monitored system.
 
+## TL;DR
+
+HTM-Monitor demonstrates **multi-signal anomaly detection on streaming data**.
+
+- signals stream in continuously  
+- HTM models learn temporal patterns online  
+- anomaly probabilities rise when structure changes  
+- a **system-level alert** triggers when enough signals are abnormal  
+
+Runs produce reproducible artifacts (`run.csv`, `run.manifest.json`, evaluation summaries) so results can be inspected or shared easily.
+
 ![Live demo](assets/demo_synth.gif)
 
 Signals stream in → HTM learns normal behavior online → anomaly probability rises → a **system alert** triggers.
 
 *Example: three signals monitored simultaneously with overlapping anomaly events.*
-
----
-
-## Where this is useful
-
-HTM-Monitor is designed for **systems where behavior unfolds over time** and deviations matter more than static thresholds.
-
-Typical applications include:
-
-- **Industrial monitoring** — machines, manufacturing lines, process signals  
-- **Infrastructure monitoring** — servers, cloud systems, observability metrics  
-- **Cybersecurity signals** — network traffic or behavioral indicators  
-- **IoT / sensor networks** — multi-sensor environments with evolving patterns
-
-Unlike many anomaly detection systems, HTM learns **temporal structure online** and adapts continuously as new data arrives.
-
----
-
-## How HTM differs from typical anomaly detection
-
-Many anomaly detection systems rely on approaches such as:
-
-- static thresholds
-- batch-trained statistical models
-- or models that must be retrained when behavior shifts
-
-HTM takes a different approach. It is designed for **continuous learning on streaming data**.
-
-Key differences:
-
-- **Online learning** — the model updates continuously as new data arrives  
-- **Temporal memory** — it learns sequences and transitions, not just value distributions  
-- **No retraining cycles** — the system adapts automatically as patterns evolve  
-- **Multi-signal monitoring** — signals can be combined into a single system-level alert
-
-This makes HTM particularly well suited for systems where anomalies appear as **changes in temporal structure**, not just extreme values.
 
 ---
 
@@ -88,7 +63,7 @@ Runs are therefore:
 
 ---
 
-## Quickstart: run the demo locally
+## Quickstart (synthetic demo)
 
 ### 1) Install
 
@@ -105,16 +80,61 @@ python quickstart.py --usecase demo_synth --mode synth --run-id run_001 --make-g
 ```
 
 This will:
-1. generate synthetic data with subtle injected anomalies
-2. build a demo config (`configs/demo_synth.yaml`)
+1. generate synthetic signals with injected anomalies
+2. build a demo config
 3. run the pipeline
 4. analyze results
-5. optionally record frames and write assets/demo_synth.gif
+5. optionally write `assets/demo_synth.gif`
 
 Outputs you’ll care about:
 - `assets/demo_synth.gif` *(README asset)*
 - `assets/system_eval_scorecard.png` *(README asset)*
 - `assets/run_overview.png` *(README asset)*
+
+---
+
+## Real data example: NAB (exchange-4 CPC/CPM)
+
+This walkthrough runs HTM-Monitor on two real time series from the Numenta Anomaly Benchmark (NAB):
+`exchange-4_cpc_results.csv` and `exchange-4_cpm_results.csv`.
+
+Note: the NAB dataset is typically kept **outside** the repo. The generated config will reference your local CSV paths.
+
+### 1) Generate the usecase config (interactive wizard)
+
+This writes:
+- `specs/nab_exchange4.build.yaml` *(reproducible “build spec”)*
+- `configs/nab_exchange4.yaml` *(runnable config)*
+
+```bash
+python -m htm_monitor.cli.usecase_wizard \
+  --spec-out specs/nab_exchange4.build.yaml \
+  --out-dir configs
+```
+
+### 2) Run the pipeline
+
+`--out` is a **file path** for `run.csv` (not a directory). The manifest is written next to it automatically.
+
+```bash
+python -m htm_monitor.cli.run_pipeline \
+  --config configs/nab_exchange4.yaml \
+  --defaults configs/htm_defaults.yaml \
+  --out outputs/nab_exchange4/run.csv
+```
+
+### 3) Analyze the run
+
+`analyze_run` requires the config (for ground truth + decision semantics).
+
+```bash
+python -m htm_monitor.cli.analyze_run \
+  --run-dir outputs/nab_exchange4 \
+  --config configs/nab_exchange4.yaml
+```
+
+Outputs are written to:
+`outputs/nab_exchange4/analysis/run_summary.{json,md}`
 
 ---
 
@@ -176,13 +196,7 @@ src/htm_monitor/
 
 ---
 
-## Notes / FAQ
-
-### Why HTM?
-HTM is well-suited to streaming settings where:
-- patterns are temporal
-- you want online learning
-- you want early detection of structural deviations
+## FAQ
 
 ### Can I run without the live plot?
 Yes:

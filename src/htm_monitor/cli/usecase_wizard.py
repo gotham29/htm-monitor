@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Mapping
 
 import yaml
+import pandas as pd
 
 from .make_usecase_config import build_usecase_config, collect_sources_interactive, sources_from_dicts, sources_to_dicts
 from htm_monitor.diagnostics.encoding_sanity import summarize_range, write_linear_hist_png
@@ -150,7 +151,6 @@ def run_interactive() -> UsecaseBuildSpec:
     src_specs = sources_from_dicts(sources_to_dicts(sources))
     for src in src_specs:
         for feat_name, col_name in src.fields.items():
-            import pandas as pd
             df = pd.read_csv(src.path, usecols=[col_name], low_memory=False)
             s = df[col_name]
 

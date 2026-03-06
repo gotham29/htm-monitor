@@ -707,6 +707,7 @@ def build_model_hot_mask(
     score_col: str,
     threshold: float,
     prefer_hot_by_model: bool,
+    min_t: Optional[int] = None,
 ) -> Tuple[List[int], List[bool]]:
     """
     Return (t_index, hot_mask) for a specific model.
@@ -714,6 +715,8 @@ def build_model_hot_mask(
     Else: use (score_col >= threshold).
     """
     sub = df[df["model"] == model_name].copy()
+    if min_t is not None:
+        sub = sub[sub["t"].astype(int) >= int(min_t)].copy()
     if sub.empty:
         return [], []
 
@@ -826,6 +829,7 @@ def summarize(
             score_col=score_col,
             threshold=threshold,
             prefer_hot_by_model=prefer_hot_by_model,
+            min_t=t_min,
         )
         model_eps = _episodes_from_boolean(hot_mask, t_idx)
 

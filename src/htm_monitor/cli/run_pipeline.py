@@ -216,7 +216,6 @@ class _RunPaths:
 
 def _resolve_run_paths(
     *,
-    defaults_path: str,
     config_path: str,
     out: Optional[str],
     run_dir: Optional[str],
@@ -238,6 +237,11 @@ def _resolve_run_paths(
 
     # Legacy: out points to a CSV file path.
     out_csv = Path(out or "outputs/out.csv")
+    if out_csv.exists() and out_csv.is_dir():
+        raise ValueError(
+            f"--out expects a CSV file path, but got a directory: {out_csv}\n"
+            "Use --run-dir <dir> for canonical run-folder mode, or pass --out <dir>/run.csv."
+        )
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     manifest = out_csv.with_suffix(".manifest.json")
     return _RunPaths(run_dir=None, out_csv=out_csv, manifest=manifest, analysis_dir=None)
@@ -437,7 +441,6 @@ def main() -> None:
     decision_score_key_engine = _SCORE_KEY_ALIASES.get(decision_score_key_effective, decision_score_key_effective)
 
     run_paths = _resolve_run_paths(
-        defaults_path=args.defaults,
         config_path=args.config,
         out=args.out,
         run_dir=args.run_dir,
