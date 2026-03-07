@@ -1,0 +1,14 @@
+{
+  "type": "multirate_fixture",
+  "signals": {
+    "sA": {
+      "stride": 1
+    },
+    "sB": {
+      "stride": 2
+    },
+    "sC": {
+      "stride": 4
+    }
+  }
+}

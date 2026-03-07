@@ -364,7 +364,7 @@ def _map_gt_strings_to_t(
     *,
     strict: bool,
     ctx: str,
-) -> List[int]:
+) -> Tuple[List[int], List[str]]:
     out: List[int] = []
     missing: List[str] = []
     for ts in gt_ts:
@@ -377,7 +377,7 @@ def _map_gt_strings_to_t(
             f"GT onset timestamp(s) missing from run timeline for {ctx}: "
             f"{missing[:10]}{' ...' if len(missing)>10 else ''}"
         )
-    return sorted(set(out))
+    return sorted(set(out)), missing
 
 
 # -------------------------
@@ -811,22 +811,34 @@ def summarize(
 
     # --- Map per-source GT onset timestamp strings -> t (source-aware)
     gt_onsets_t_by_source: Dict[str, List[int]] = {}
+    gt_excluded_by_source: Dict[str, List[str]] = {}
     for src, gt_ts in gt_ts_by_source.items():
         models_for_src = _models_consuming_source(model_sources, src)
         ts_to_t = _build_ts_to_t_for_models(df, models_for_src)
-        gt_onsets_t_by_source[src] = _map_gt_strings_to_t(
+        mapped_t, excluded_ts = _map_gt_strings_to_t(
             gt_ts,
             ts_to_t,
             strict=strict,
             ctx=f"source='{src}'",
         )
-
+        gt_onsets_t_by_source[src] = mapped_t
+        if excluded_ts:
+            gt_excluded_by_source[src] = list(excluded_ts)
         # Drop GT that occurs during warmup from evaluation window
         if warmup_steps > 0:
             gt_onsets_t_by_source[src] = [t for t in gt_onsets_t_by_source[src] if int(t) >= int(t_min)]
 
     if strict and (not any(bool(v) for v in gt_onsets_t_by_source.values())):
         raise ValueError("All sources have empty GT after mapping (strict).")
+
+    if (not strict) and gt_excluded_by_source:
+        for src, ts_list in gt_excluded_by_source.items():
+            log.warning(
+                "coverage-aware eval: excluded %d GT onset(s) for source='%s' because timestamps were not present in run timeline: %s",
+                len(ts_list),
+                src,
+                ts_list[:10],
+            )
 
     # --- Per-model eval (model detection episodes vs that model's source GT onsets)
     by_model: Dict[str, Any] = {}
@@ -901,6 +913,7 @@ def summarize(
     summary: Dict[str, Any] = {
         "csv": None,
         "config": config_path,
+        "evaluation_mode": "strict" if strict else "coverage_aware",
         "warmup_steps": int(warmup_steps),
         "eval_timesteps_excludes_warmup": True,
         "timesteps": {"min": t_min, "max": t_max, "count": n_steps},
@@ -933,6 +946,8 @@ def summarize(
         "ground_truth": {
             "source": "config.data.sources[*].labels.timestamps (onsets)",
             "by_source_onsets": gt_onsets_t_by_source,
+            "excluded_by_source": gt_excluded_by_source,
+            "excluded_count": int(sum(len(v) for v in gt_excluded_by_source.values())),
             "by_model": by_model,
             "system": {
                 "definition": {
@@ -989,11 +1004,20 @@ def summarize(
         md.append(f"- Warmup steps (excluded from eval): **{warmup_steps}**\n")
         md.append(f"- Timesteps: **{t_min} → {t_max}** (n={n_steps})\n")
         md.append(f"- Time range: **{one_eval['ts'].min()} → {one_eval['ts'].max()}**\n")
+        md.append(f"- Evaluation mode: **{'strict' if strict else 'coverage-aware'}**\n")
         if step_minutes is not None:
             md.append(f"- Inferred step: **{step_minutes:.3f} min**\n")
         md.append(f"- System alert timesteps: **{int(one_eval['alert'].sum())}** ({float(one_eval['alert'].mean())*100:.2f}% of steps)\n")
         md.append(f"- System alert episodes: **{len(sys_eps)}**\n\n")
-
+        if gt_excluded_by_source:
+            md.append("## Coverage-aware GT exclusions\n\n")
+            md.append("The following GT onset timestamps were excluded from scoring because they were not present in the observed run timeline for the corresponding source.\n\n")
+            md.append("| Source | Excluded GT count | Example timestamps |\n")
+            md.append("|---|---:|---|\n")
+            for src, ts_list in sorted(gt_excluded_by_source.items()):
+                preview = ", ".join(ts_list[:3])
+                md.append(f"| {src} | {len(ts_list)} | {preview} |\n")
+            md.append("\n")
         md.append("## Decision\n")
         md.append(f"- method: `{decision.method}`\n")
         md.append(f"- score_col: `{score_col}` (score_key=`{decision.score_key}`)\n")
