@@ -275,6 +275,7 @@ def _write_manifest(
         "inputs": {"defaults": defaults_path, "config": config_path},
         "data": {
             "timebase_mode": (cfg.get("data", {}).get("timebase", {}).get("mode") or "union"),
+            "on_missing": (cfg.get("data", {}).get("timebase", {}).get("on_missing") or "hold_last"),
             "sources": {
                 name: {
                     "path": sc.path,

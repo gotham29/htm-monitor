@@ -1,25 +1,14 @@
 # HTM-Monitor
 
-Real-time anomaly detection for streaming time series using **Hierarchical Temporal Memory (HTM)**.
-
-HTM-Monitor learns normal behavior from live signals and detects structural deviations **in real time**, converting per-signal anomaly probabilities into a single **system-level alert** for the monitored system.
-
-## TL;DR
-
-HTM-Monitor demonstrates **multi-signal anomaly detection on streaming data**.
-
-- signals stream in continuously  
-- HTM models learn temporal patterns online  
-- anomaly probabilities rise when structure changes  
-- a **system-level alert** triggers when enough signals are abnormal  
-
-Runs produce reproducible artifacts (`run.csv`, `run.manifest.json`, evaluation summaries) so results can be inspected or shared easily.
++Real-time multi-signal anomaly detection for streaming time series using **Hierarchical Temporal Memory (HTM)**.
 
 ![Live demo](assets/demo_synth.gif)
 
-Signals stream in → HTM learns normal behavior online → anomaly probability rises → a **system alert** triggers.
+Signals stream in → HTM learns online → anomaly probability rises → **system alert** triggers.
 
 *Example: three signals monitored simultaneously with overlapping anomaly events.*
+
+Each run writes reproducible artifacts (`run.csv`, `run.manifest.json`, evaluation summaries`) for inspection and sharing.
 
 ---
 

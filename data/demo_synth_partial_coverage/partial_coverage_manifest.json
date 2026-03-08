@@ -1,0 +1,26 @@
+{
+  "type": "partial_coverage_fixture",
+  "signals": {
+    "sA": {
+      "rows_original": 2304,
+      "rows_kept": 2304,
+      "first_row_kept": 0,
+      "last_row_kept": 2303,
+      "coverage": "full"
+    },
+    "sB": {
+      "rows_original": 2304,
+      "rows_kept": 1904,
+      "first_row_kept": 400,
+      "last_row_kept": 2303,
+      "coverage": "starts_late"
+    },
+    "sC": {
+      "rows_original": 2304,
+      "rows_kept": 1904,
+      "first_row_kept": 0,
+      "last_row_kept": 1903,
+      "coverage": "ends_early"
+    }
+  }
+}
