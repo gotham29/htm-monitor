@@ -92,6 +92,10 @@ data:
 run:
   warmup_steps: 500
   learn_after_warmup: true
+learning:
+  mode: warmup_then_online
+  notes: >
+    Synthetic demo uses a warmup period and then continues online detection.
 decision:
   score_key: anomaly_probability
   threshold: 0.99
@@ -100,6 +104,11 @@ decision:
   window:
     size: 24
     per_model_hits: 2
+evaluation:
+  mode: onset_detection
+  notes: >
+    Synthetic demo uses onset-detection semantics:
+    GT timestamps mark abnormal-regime onset and alerts are expected shortly after.
 plot:
   enable: false
   step_pause_s: 0.01
