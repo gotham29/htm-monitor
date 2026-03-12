@@ -1,3 +1,16 @@
+# ------------------------------------------------------------------
+# HTM-Monitor example config
+#
+# Purpose:
+#   - demonstrate config schema / semantics fields
+#   - serve as a starting template for real use cases
+#
+# Important:
+#   - this file is NOT tied to a specific checked-in run artifact
+#   - paths and GT timestamps below are illustrative placeholders/examples
+#   - do not expect analyze_run to succeed against an unrelated run.csv
+# ------------------------------------------------------------------
+
 features:
   timestamp:
     type: datetime
@@ -69,6 +82,15 @@ data:
 run:
   warmup_steps: 300
   learn_after_warmup: true
+
+learning:
+  mode: online_continuous
+  notes: >
+    Semantic learning policy for this use case.
+    Accepted for schema clarity now; runtime behavior may still be driven
+    by run.warmup_steps and run.learn_after_warmup until train/freeze mode
+    is implemented in the pipeline.
+
 decision:
   score_key: anomaly_probability
   threshold: 0.997
@@ -77,6 +99,30 @@ decision:
   window:
     size: 24
     per_model_hits: 2
+
+evaluation:
+  mode: onset_detection
+  notes: >
+    Semantic evaluation mode for this use case.
+    onset_detection means GT timestamps represent abnormal-regime onset and
+    alerts should occur shortly after GT.
+    Future modes may include predictive_warning, where GT represents a future
+    event or warning horizon and alerts should occur before it.
+
+  # IMPORTANT:
+  # The timestamps in this example file are illustrative NAB-style examples.
+  # If you run analyze_run with this config, the run.csv must come from the
+  # same underlying dataset/timeline or strict GT mapping will fail.
+
+  # Example future predictive-warning schema:
+  # predictive_warning:
+  #   event_type: failure_horizon
+  #   target_source: system
+  #   warning_window:
+  #     start_steps_before_event: 30
+  #     end_steps_before_event: 5
+  #   too_early_window:
+  #     min_steps_before_event: 31
 plot:
   enable: true
   step_pause_s: 0.01

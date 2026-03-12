@@ -1,0 +1,38 @@
+{
+  "dataset": "CMAPSS_FD001",
+  "unit_id": 34,
+  "source_csv": "/Users/samheiserman/Desktop/repos/htm-monitor/data/cmapss_fd001/demo/fd001_test_scored.csv",
+  "selected_sensors": [
+    "sensor_9",
+    "sensor_14",
+    "sensor_4",
+    "sensor_3",
+    "sensor_17",
+    "sensor_7",
+    "sensor_12",
+    "sensor_11"
+  ],
+  "n_cycles": 203,
+  "cycle_min": 1,
+  "cycle_max": 203,
+  "synthetic_time": {
+    "start": "2000-01-01 00:00:00",
+    "freq": "1H"
+  },
+  "label_definition": {
+    "late_life_30": "rows where rul_at_cycle <= 30",
+    "late_life_20": "rows where rul_at_cycle <= 20",
+    "late_life_10": "rows where rul_at_cycle <= 10"
+  },
+  "gt_counts": {
+    "late_life_30": 24,
+    "late_life_20": 14,
+    "late_life_10": 4
+  },
+  "rul_summary": {
+    "max_rul_at_cycle": 209,
+    "min_rul_at_cycle": 7,
+    "failure_cycle": 210,
+    "max_cycle_observed": 203
+  }
+}

@@ -2,7 +2,7 @@
 
 import yaml
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Set, Optional
 
 from htm_monitor.htm_src.feature import Feature
 from htm_monitor.htm_src.htm_model import HTMmodel
@@ -61,6 +61,18 @@ def _optional_mapping(cfg: Dict[str, Any], key: str) -> Dict[str, Any]:
     if not isinstance(v, dict):
         raise ValueError(f"Config.{key} must be a mapping if provided")
     return v
+
+
+def _optional_enum(mapping: Dict[str, Any], key: str, *, allowed: Set[str], ctx: str) -> Optional[str]:
+    v = mapping.get(key)
+    if v is None:
+        return None
+    if not isinstance(v, str) or not v.strip():
+        raise ValueError(f"{ctx}.{key} must be a non-empty string if provided")
+    out = v.strip()
+    if out not in allowed:
+        raise ValueError(f"{ctx}.{key} must be one of {sorted(allowed)}; got '{out}'")
+    return out
 
 
 def _assert_only_known_top_keys(cfg: Dict[str, Any], *, allow: Set[str]) -> None:
@@ -130,6 +142,8 @@ def build_from_config(defaults_path: str, user_path: str):
             "calibration",
             "run",
             "ground_truth",
+            "learning",
+            "evaluation",
         },
     )
 
@@ -149,6 +163,31 @@ def build_from_config(defaults_path: str, user_path: str):
         raise ValueError("Config key 'htm_params' must be a mapping")
     if not isinstance(cfg.get("data"), dict):
         raise ValueError("Config key 'data' must be a mapping")
+
+    # ---- Optional semantic sections (accepted now, behavior wired later) ----
+    learning_cfg = cfg.get("learning")
+    if learning_cfg is not None and not isinstance(learning_cfg, dict):
+        raise ValueError("Config key 'learning' must be a mapping if provided")
+
+    evaluation_cfg = cfg.get("evaluation")
+    if evaluation_cfg is not None and not isinstance(evaluation_cfg, dict):
+        raise ValueError("Config key 'evaluation' must be a mapping if provided")
+
+    if isinstance(learning_cfg, dict):
+        _optional_enum(
+            learning_cfg,
+            "mode",
+            allowed={"online_continuous", "warmup_then_online", "train_then_freeze"},
+            ctx="Config.learning",
+        )
+
+    if isinstance(evaluation_cfg, dict):
+        _optional_enum(
+            evaluation_cfg,
+            "mode",
+            allowed={"onset_detection", "predictive_warning"},
+            ctx="Config.evaluation",
+        )
 
     # ---- Build Features ----
     fcfg = _require_mapping(cfg, "features")

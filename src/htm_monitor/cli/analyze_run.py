@@ -206,6 +206,146 @@ class SystemGtParams:
     per_source_hits: int
 
 
+@dataclass(frozen=True)
+class PredictiveWarningContract:
+    event_type: str
+    target_source: str
+    warning_start_steps_before_event: int
+    warning_end_steps_before_event: int
+    too_early_min_steps_before_event: Optional[int]
+
+
+@dataclass
+class PredictiveWarningPerEventRow:
+    event_t: int
+    event_ts: Optional[str]
+    first_alert_t: Optional[int]
+    first_alert_ts: Optional[str]
+    first_alert_lead_steps: Optional[int]
+    first_alert_lead_minutes: Optional[float]
+    first_alert_classification: str
+    has_any_in_warning_window: bool
+    in_window_episode_starts: List[int]
+    hot_models_first_alert: Optional[List[str]]
+
+
+@dataclass
+class PredictiveWarningEval:
+    event_count: int
+    episode_count: int
+    matched_events_in_warning_window: int
+    first_alert_summary: Dict[str, int]
+    episode_summary: Dict[str, int]
+    lead_steps_stats_in_warning_window: Dict[str, Optional[float]]
+    lead_minutes_stats_in_warning_window: Dict[str, Optional[float]]
+    per_event: List[PredictiveWarningPerEventRow]
+
+
+def _load_predictive_warning_contract(config_path: str) -> Optional[PredictiveWarningContract]:
+    """
+    Load optional predictive-warning semantic contract from config:
+
+      evaluation:
+        mode: predictive_warning
+        predictive_warning:
+          event_type: failure_horizon
+          target_source: system
+          warning_window:
+            start_steps_before_event: 30
+            end_steps_before_event: 5
+          too_early_window:
+            min_steps_before_event: 31
+
+    This validates and normalizes the semantic contract.
+    Runtime scoring may use this contract when evaluation.mode == predictive_warning.
+    """
+    cfg = yaml.safe_load(Path(config_path).read_text())
+    if not isinstance(cfg, dict):
+        raise ValueError("config YAML must be a mapping at top-level")
+
+    evaluation = cfg.get("evaluation") or {}
+    if not isinstance(evaluation, dict):
+        raise ValueError("config.evaluation must be a mapping if provided")
+
+    pw = evaluation.get("predictive_warning")
+    if pw is None:
+        return None
+    if not isinstance(pw, dict):
+        raise ValueError("config.evaluation.predictive_warning must be a mapping if provided")
+
+    event_type = pw.get("event_type")
+    target_source = pw.get("target_source")
+    warning_window = pw.get("warning_window")
+    too_early_window = pw.get("too_early_window") or {}
+
+    if not isinstance(event_type, str) or not event_type.strip():
+        raise ValueError("config.evaluation.predictive_warning.event_type must be a non-empty string")
+    if not isinstance(target_source, str) or not target_source.strip():
+        raise ValueError("config.evaluation.predictive_warning.target_source must be a non-empty string")
+    if not isinstance(warning_window, dict):
+        raise ValueError("config.evaluation.predictive_warning.warning_window must be a mapping")
+    if not isinstance(too_early_window, dict):
+        raise ValueError("config.evaluation.predictive_warning.too_early_window must be a mapping if provided")
+
+    start_steps = warning_window.get("start_steps_before_event")
+    end_steps = warning_window.get("end_steps_before_event")
+    if not isinstance(start_steps, int) or start_steps <= 0:
+        raise ValueError(
+            "config.evaluation.predictive_warning.warning_window.start_steps_before_event "
+            "must be an int > 0"
+        )
+    if not isinstance(end_steps, int) or end_steps < 0:
+        raise ValueError(
+            "config.evaluation.predictive_warning.warning_window.end_steps_before_event "
+            "must be an int >= 0"
+        )
+    if start_steps <= end_steps:
+        raise ValueError(
+            "config.evaluation.predictive_warning.warning_window must satisfy "
+            "start_steps_before_event > end_steps_before_event"
+        )
+
+    too_early_min = too_early_window.get("min_steps_before_event")
+    if too_early_min is not None:
+        if not isinstance(too_early_min, int) or too_early_min <= 0:
+            raise ValueError(
+                "config.evaluation.predictive_warning.too_early_window.min_steps_before_event "
+                "must be an int > 0 if provided"
+            )
+
+    return PredictiveWarningContract(
+        event_type=str(event_type).strip(),
+        target_source=str(target_source).strip(),
+        warning_start_steps_before_event=int(start_steps),
+        warning_end_steps_before_event=int(end_steps),
+        too_early_min_steps_before_event=int(too_early_min) if too_early_min is not None else None,
+    )
+
+
+def _load_evaluation_mode(config_path: str) -> str:
+    """
+    Load semantic evaluation mode from config.
+
+    Currently supported:
+      - onset_detection
+      - predictive_warning
+
+    Runtime scoring is only implemented for onset_detection at this phase.
+    """
+    cfg = yaml.safe_load(Path(config_path).read_text())
+    if not isinstance(cfg, dict):
+        raise ValueError("config YAML must be a mapping at top-level")
+
+    evaluation = cfg.get("evaluation") or {}
+    if not isinstance(evaluation, dict):
+        raise ValueError("config.evaluation must be a mapping if provided")
+
+    mode = str(evaluation.get("mode") or "onset_detection").strip() or "onset_detection"
+    if mode not in {"onset_detection", "predictive_warning"}:
+        raise ValueError(f"config.evaluation.mode must be 'onset_detection' or 'predictive_warning'; got '{mode}'")
+    return mode
+
+
 def _load_decision_params(config_path: str) -> DecisionParams:
     cfg = yaml.safe_load(Path(config_path).read_text())
     if not isinstance(cfg, dict):
@@ -679,6 +819,182 @@ def eval_onsets_vs_episodes(
     )
 
 
+def _classify_predictive_warning_lead(
+    lead_steps: int,
+    *,
+    warning_start_steps_before_event: int,
+    warning_end_steps_before_event: int,
+) -> str:
+    """
+    lead_steps = event_t - alert_t
+
+    Larger lead => earlier alert.
+    Smaller lead => later alert.
+    """
+    if lead_steps > int(warning_start_steps_before_event):
+        return "too_early"
+    if lead_steps < int(warning_end_steps_before_event):
+        return "too_late"
+    return "in_warning_window"
+
+
+def eval_predictive_warning_vs_episodes(
+    one: pd.DataFrame,
+    event_ts_t: List[int],
+    episodes: List[Tuple[int, int]],
+    *,
+    contract: PredictiveWarningContract,
+    step_minutes: Optional[float],
+    hot_dict_by_t: Optional[Dict[int, Dict[str, Any]]] = None,
+) -> PredictiveWarningEval:
+    """
+    Predictive-warning scoring:
+
+    Event-centric view:
+      - For each event, inspect alerts after the previous event and up to the current event.
+      - first_alert_classification is based on the earliest such alert.
+      - has_any_in_warning_window is True if any alert for that event lands in-band.
+
+    Episode-centric view:
+      - Every episode is scored against its nearest future event, if one exists.
+      - Episodes after the final event are counted as unscored.
+    """
+    events = sorted(set(int(x) for x in event_ts_t))
+    eps = sorted((int(s), int(e)) for (s, e) in episodes)
+    episode_starts = [int(s) for s, _ in eps]
+
+    t_to_ts: Dict[int, Any] = dict(zip(one["t"].astype(int).tolist(), one["ts"].tolist()))
+
+    def _ts_str(x: Any) -> Optional[str]:
+        if x is None:
+            return None
+        if isinstance(x, pd.Timestamp):
+            if pd.isna(x):
+                return None
+            return x.isoformat()
+        if isinstance(x, datetime):
+            return x.isoformat()
+        s = str(x).strip()
+        return s if s else None
+
+    def _hot_models_at_t(t: int) -> List[str]:
+        if not hot_dict_by_t:
+            return []
+        d = hot_dict_by_t.get(int(t)) or {}
+        if not isinstance(d, dict):
+            return []
+        return sorted(str(k) for k, v in d.items() if bool(v))
+
+    first_alert_summary = {
+        "in_warning_window": 0,
+        "too_early": 0,
+        "too_late": 0,
+        "no_alert": 0,
+    }
+    episode_summary = {
+        "in_warning_window": 0,
+        "too_early": 0,
+        "too_late": 0,
+        "unscored": 0,
+    }
+
+    in_window_leads_steps: List[float] = []
+    in_window_leads_minutes: List[float] = []
+    per_event: List[PredictiveWarningPerEventRow] = []
+
+    # Event-centric
+    prev_event_t: Optional[int] = None
+    for event_t in events:
+        candidate_starts = [
+            s for s in episode_starts
+            if (prev_event_t is None or s > int(prev_event_t)) and s <= int(event_t)
+        ]
+        in_window_starts: List[int] = []
+        for s in candidate_starts:
+            lead = int(event_t) - int(s)
+            cls = _classify_predictive_warning_lead(
+                lead,
+                warning_start_steps_before_event=contract.warning_start_steps_before_event,
+                warning_end_steps_before_event=contract.warning_end_steps_before_event,
+            )
+            if cls == "in_warning_window":
+                in_window_starts.append(int(s))
+
+        if candidate_starts:
+            first_s = int(candidate_starts[0])
+            first_lead = int(event_t) - int(first_s)
+            first_cls = _classify_predictive_warning_lead(
+                first_lead,
+                warning_start_steps_before_event=contract.warning_start_steps_before_event,
+                warning_end_steps_before_event=contract.warning_end_steps_before_event,
+            )
+            first_alert_summary[first_cls] += 1
+            first_alert_lead_minutes = (float(first_lead) * float(step_minutes)) if step_minutes is not None else None
+            per_event.append(
+                PredictiveWarningPerEventRow(
+                    event_t=int(event_t),
+                    event_ts=_ts_str(t_to_ts.get(int(event_t))),
+                    first_alert_t=int(first_s),
+                    first_alert_ts=_ts_str(t_to_ts.get(int(first_s))),
+                    first_alert_lead_steps=int(first_lead),
+                    first_alert_lead_minutes=first_alert_lead_minutes,
+                    first_alert_classification=first_cls,
+                    has_any_in_warning_window=bool(in_window_starts),
+                    in_window_episode_starts=list(in_window_starts),
+                    hot_models_first_alert=_hot_models_at_t(int(first_s)),
+                )
+            )
+        else:
+            first_alert_summary["no_alert"] += 1
+            per_event.append(
+                PredictiveWarningPerEventRow(
+                    event_t=int(event_t),
+                    event_ts=_ts_str(t_to_ts.get(int(event_t))),
+                    first_alert_t=None,
+                    first_alert_ts=None,
+                    first_alert_lead_steps=None,
+                    first_alert_lead_minutes=None,
+                    first_alert_classification="no_alert",
+                    has_any_in_warning_window=False,
+                    in_window_episode_starts=[],
+                    hot_models_first_alert=None,
+                )
+            )
+
+        prev_event_t = int(event_t)
+
+    # Episode-centric
+    for s in episode_starts:
+        future_events = [e for e in events if int(e) >= int(s)]
+        if not future_events:
+            episode_summary["unscored"] += 1
+            continue
+        e = int(future_events[0])
+        lead = int(e) - int(s)
+        cls = _classify_predictive_warning_lead(
+            lead,
+            warning_start_steps_before_event=contract.warning_start_steps_before_event,
+            warning_end_steps_before_event=contract.warning_end_steps_before_event,
+        )
+        episode_summary[cls] += 1
+        if cls == "in_warning_window":
+            in_window_leads_steps.append(float(lead))
+            if step_minutes is not None:
+                in_window_leads_minutes.append(float(lead) * float(step_minutes))
+
+    matched_events = sum(1 for r in per_event if r.has_any_in_warning_window)
+    return PredictiveWarningEval(
+        event_count=int(len(events)),
+        episode_count=int(len(eps)),
+        matched_events_in_warning_window=int(matched_events),
+        first_alert_summary=first_alert_summary,
+        episode_summary=episode_summary,
+        lead_steps_stats_in_warning_window=_format_stats(in_window_leads_steps),
+        lead_minutes_stats_in_warning_window=_format_stats(in_window_leads_minutes),
+        per_event=per_event,
+    )
+
+
 # -------------------------
 # Detection episode derivation
 # -------------------------
@@ -789,9 +1105,17 @@ def summarize(
     n_steps = int(len(one_eval))
     step_minutes = _infer_step_minutes(one_eval["ts"])
 
+    # Alert episodes (system detection)
+    sys_eps = _episodes_from_boolean(one_eval["alert"].astype(bool).tolist(), one_eval["t"].astype(int).tolist())
+
+    # hot_dict for “what fired” at system detection times
+    hot_dict_by_t: Dict[int, Dict[str, Any]] = dict(zip(one_eval["t"].astype(int).tolist(), one_eval["hot_dict"].tolist()))
+
     # Load contracts
     model_sources = _config_model_sources(config_path)
     decision = _load_decision_params(config_path)
+    predictive_warning_contract = _load_predictive_warning_contract(config_path)
+    evaluation_mode = _load_evaluation_mode(config_path)
     timebase = _load_timebase_params(config_path)
     sys_gt_params = _load_system_gt_params(config_path, decision)
     gt_ts_by_source = _config_gt_onsets_by_source(config_path)
@@ -802,12 +1126,6 @@ def summarize(
     # Score selection + effective threshold
     score_col = _resolve_score_column(df, decision.score_key)
     threshold = float(threshold_override) if threshold_override is not None else float(decision.threshold)
-
-    # Alert episodes (system detection)
-    sys_eps = _episodes_from_boolean(one_eval["alert"].astype(bool).tolist(), one_eval["t"].astype(int).tolist())
-
-    # hot_dict for “what fired” at system detection times
-    hot_dict_by_t: Dict[int, Dict[str, Any]] = dict(zip(one_eval["t"].astype(int).tolist(), one_eval["hot_dict"].tolist()))
 
     # --- Map per-source GT onset timestamp strings -> t (source-aware)
     gt_onsets_t_by_source: Dict[str, List[int]] = {}
@@ -889,31 +1207,119 @@ def summarize(
             "false_positive_episodes": ev.false_positive_episodes,
         }
 
-    # --- System GT + system eval (kofn_window semantics)
-    sys_gt_onsets, sys_def = derive_system_gt_onsets(
-        one_eval,
-        gt_onsets_t_by_source,
-        k=sys_gt_params.k,
-        window_size=sys_gt_params.window_size,
-        per_model_hits=sys_gt_params.per_source_hits,
-    )
-
+    predictive_warning_summary: Optional[Dict[str, Any]] = None
+    sys_gt_onsets: List[int] = []
+    sys_def: Dict[str, Any] = {}
+    if evaluation_mode == "predictive_warning" and predictive_warning_contract is not None:
+        if predictive_warning_contract.target_source == "system":
+            sys_gt_onsets, sys_def = derive_system_gt_onsets(
+                one_eval,
+                gt_onsets_t_by_source,
+                k=sys_gt_params.k,
+                window_size=sys_gt_params.window_size,
+                per_model_hits=sys_gt_params.per_source_hits,
+            )
     sys_eval: Optional[GtEval] = None
-    if sys_gt_onsets:
-        sys_eval = eval_onsets_vs_episodes(
+
+    if evaluation_mode == "predictive_warning":
+        if predictive_warning_contract is None:
+            raise ValueError(
+                "config.evaluation.mode='predictive_warning' requires "
+                "config.evaluation.predictive_warning"
+            )
+
+        if predictive_warning_contract.target_source == "system":
+            target_event_ts = list(sys_gt_onsets)
+        else:
+            target_event_ts = sorted(set(
+                gt_onsets_t_by_source.get(predictive_warning_contract.target_source) or []
+            ))
+
+        if strict and not target_event_ts:
+            raise ValueError(
+                "Predictive-warning target event stream is empty after GT mapping. "
+                f"target_source='{predictive_warning_contract.target_source}'"
+            )
+
+        pw_eval = eval_predictive_warning_vs_episodes(
             one_eval,
-            sys_gt_onsets,
+            target_event_ts,
             sys_eps,
-            max_lag_steps=max_lag_steps,
+            contract=predictive_warning_contract,
             step_minutes=step_minutes,
             hot_dict_by_t=hot_dict_by_t,
         )
+        predictive_warning_summary = {
+            "contract": {
+                "event_type": predictive_warning_contract.event_type,
+                "target_source": predictive_warning_contract.target_source,
+                "warning_window": {
+                    "start_steps_before_event": predictive_warning_contract.warning_start_steps_before_event,
+                    "end_steps_before_event": predictive_warning_contract.warning_end_steps_before_event,
+                },
+                "too_early_window": {
+                    "min_steps_before_event": predictive_warning_contract.too_early_min_steps_before_event,
+                },
+            },
+            "status": "implemented",
+            "event_count": pw_eval.event_count,
+            "episode_count": pw_eval.episode_count,
+            "matched_events_in_warning_window": pw_eval.matched_events_in_warning_window,
+            "first_alert_summary": pw_eval.first_alert_summary,
+            "episode_summary": pw_eval.episode_summary,
+            "lead_steps_stats_in_warning_window": pw_eval.lead_steps_stats_in_warning_window,
+            "lead_minutes_stats_in_warning_window": pw_eval.lead_minutes_stats_in_warning_window,
+            "per_event": [
+                {
+                    "event_t": r.event_t,
+                    "event_ts": r.event_ts,
+                    "first_alert_t": r.first_alert_t,
+                    "first_alert_ts": r.first_alert_ts,
+                    "first_alert_lead_steps": r.first_alert_lead_steps,
+                    "first_alert_lead_minutes": r.first_alert_lead_minutes,
+                    "first_alert_classification": r.first_alert_classification,
+                    "has_any_in_warning_window": bool(r.has_any_in_warning_window),
+                    "in_window_episode_starts": list(r.in_window_episode_starts),
+                    "hot_models_first_alert": r.hot_models_first_alert,
+                }
+                for r in pw_eval.per_event
+            ],
+        }
+    else:
+        # --- System GT + system eval (kofn_window semantics)
+        sys_gt_onsets, sys_def = derive_system_gt_onsets(
+            one_eval,
+            gt_onsets_t_by_source,
+            k=sys_gt_params.k,
+            window_size=sys_gt_params.window_size,
+            per_model_hits=sys_gt_params.per_source_hits,
+        )
+
+        if sys_gt_onsets:
+            sys_eval = eval_onsets_vs_episodes(
+                one_eval,
+                sys_gt_onsets,
+                sys_eps,
+                max_lag_steps=max_lag_steps,
+                step_minutes=step_minutes,
+                hot_dict_by_t=hot_dict_by_t,
+            )
 
     # Emit summary
     summary: Dict[str, Any] = {
         "csv": None,
         "config": config_path,
-        "evaluation_mode": "strict" if strict else "coverage_aware",
+        "gt_mapping_mode": "strict" if strict else "coverage_aware",
+        "use_case_semantics": {
+            "evaluation_mode": evaluation_mode,
+            "predictive_warning_contract": (
+                predictive_warning_contract.__dict__
+                if predictive_warning_contract is not None
+                else None
+            ),
+            "implemented_scoring_mode": evaluation_mode,
+        },
+        "predictive_warning_eval": predictive_warning_summary,
         "warmup_steps": int(warmup_steps),
         "eval_timesteps_excludes_warmup": True,
         "timesteps": {"min": t_min, "max": t_max, "count": n_steps},
@@ -1004,7 +1410,27 @@ def summarize(
         md.append(f"- Warmup steps (excluded from eval): **{warmup_steps}**\n")
         md.append(f"- Timesteps: **{t_min} → {t_max}** (n={n_steps})\n")
         md.append(f"- Time range: **{one_eval['ts'].min()} → {one_eval['ts'].max()}**\n")
-        md.append(f"- Evaluation mode: **{'strict' if strict else 'coverage-aware'}**\n")
+        md.append(f"- GT mapping mode: **{'strict' if strict else 'coverage-aware'}**\n")
+        md.append(f"- Use-case semantics: **{evaluation_mode}**\n")
+        if predictive_warning_summary is not None:
+            md.append(
+                f"- Predictive-warning contract present: `{json.dumps(predictive_warning_summary['contract'], sort_keys=True)}`\n"
+            )
+            md.append(
+                f"- Predictive-warning matched events in window: **{predictive_warning_summary['matched_events_in_warning_window']} / {predictive_warning_summary['event_count']}**\n"
+            )
+            md.append(
+                f"- Predictive-warning first alert summary: `{predictive_warning_summary['first_alert_summary']}`\n"
+            )
+            md.append(
+                f"- Predictive-warning episode summary: `{predictive_warning_summary['episode_summary']}`\n"
+            )
+            md.append(
+                f"- Predictive-warning lead steps (in-window): `{predictive_warning_summary['lead_steps_stats_in_warning_window']}`\n"
+            )
+            md.append(
+                f"- Predictive-warning lead minutes (in-window): `{predictive_warning_summary['lead_minutes_stats_in_warning_window']}`\n"
+            )
         if step_minutes is not None:
             md.append(f"- Inferred step: **{step_minutes:.3f} min**\n")
         md.append(f"- System alert timesteps: **{int(one_eval['alert'].sum())}** ({float(one_eval['alert'].mean())*100:.2f}% of steps)\n")
@@ -1039,14 +1465,24 @@ def summarize(
         else:
             md.append("_No per-model GT eval rows (missing GT or model_sources mapping)._ \n")
 
-        md.append("\n## System eval (kofn_window-derived system GT onsets)\n\n")
-        md.append(f"- System GT onsets: **{len(sys_gt_onsets)}**\n")
-        if sys_eval is not None and sys_eval.precision is not None:
-            md.append(f"- Precision / Recall / F1: **{sys_eval.precision:.3f} / {sys_eval.recall:.3f} / {sys_eval.f1:.3f}**\n")
-            md.append(f"- Lag steps stats: `{sys_eval.lag_steps_stats}`\n")
-            md.append(f"- Lag minutes stats: `{sys_eval.lag_minutes_stats}`\n")
+        md.append("\n## System eval\n\n")
+        if evaluation_mode == "predictive_warning" and predictive_warning_summary is not None:
+            md.append(f"- Target events: **{predictive_warning_summary['event_count']}**\n")
+            md.append(f"- Matched in warning window: **{predictive_warning_summary['matched_events_in_warning_window']}**\n")
+            md.append(f"- First alert summary: `{predictive_warning_summary['first_alert_summary']}`\n")
+            md.append(f"- Episode summary: `{predictive_warning_summary['episode_summary']}`\n")
         else:
-            md.append("_System GT empty or insufficient data for scoring._\n")
+            if sys_eval is not None and sys_eval.precision is not None:
+                md.append(f"- GT events: **{sys_eval.gt_count}**\n")
+                md.append(f"- Matched events: **{sys_eval.matched_gt}**\n")
+                md.append(
+                    f"- Precision / Recall / F1: **{sys_eval.precision:.3f} / "
+                    f"{sys_eval.recall:.3f} / {sys_eval.f1:.3f}**\n"
+                )
+                md.append(f"- Lag steps stats: `{sys_eval.lag_steps_stats}`\n")
+                md.append(f"- Lag minutes stats: `{sys_eval.lag_minutes_stats}`\n")
+            else:
+                md.append("_No system GT events available for scoring._\n")
 
         (outp / "run_summary.md").write_text("".join(md))
         log.info("wrote %s", outp / "run_summary.json")
