@@ -711,6 +711,7 @@ def main() -> None:
             for m in members:
                 model_group_membership[str(m)] = str(gname)
 
+    if plot_enabled_effective:
         plot = LivePlot(
             window=int(plot_cfg.get("window", 300)),
             refresh_every=1,

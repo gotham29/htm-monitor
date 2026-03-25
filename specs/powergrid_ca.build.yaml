@@ -75,8 +75,8 @@ params:
   rdse_active_bits: 40
   rdse_num_buckets: 130
   seed_base: 42
-  low_q: 0.05
-  high_q: 0.95
+  low_q: 0.01
+  high_q: 0.99
   margin: 0.05
   model_layout: separate
   chunk_size: 2
@@ -103,10 +103,13 @@ params:
     - imbalance_delta_model
     - imbalance_residual_model
   run_learn_after_warmup: true
+  plot_max_label_len: 16
+  plot_label_color_mode: by_group
+  plot_model_label_colors: null
 calibration:
   method: quantile
-  low_q: 0.05
-  high_q: 0.95
+  low_q: 0.01
+  high_q: 0.99
   margin: 0.05
   hist_bins: 130
   min_floor: null

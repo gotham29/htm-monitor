@@ -81,7 +81,6 @@ data:
   sources:
   - name: demand
     kind: csv
-    unit: MW
     path: /Users/samheiserman/Desktop/repos/htm-monitor/data/grid/caiso_2019fit_2020_2022_pad0p00/demand.csv
     timestamp_col: timestamp
     timestamp_format: '%Y-%m-%d %H:%M:%S'
@@ -97,7 +96,6 @@ data:
         end: '2022-09-09 00:00:00'
   - name: net_generation
     kind: csv
-    unit: MW
     path: /Users/samheiserman/Desktop/repos/htm-monitor/data/grid/caiso_2019fit_2020_2022_pad0p00/net_generation.csv
     timestamp_col: timestamp
     timestamp_format: '%Y-%m-%d %H:%M:%S'
@@ -113,7 +111,6 @@ data:
         end: '2022-09-09 00:00:00'
   - name: imbalance
     kind: csv
-    unit: MW
     path: /Users/samheiserman/Desktop/repos/htm-monitor/data/grid/caiso_2019fit_2020_2022_pad0p00/imbalance.csv
     timestamp_col: timestamp
     timestamp_format: '%Y-%m-%d %H:%M:%S'
@@ -129,7 +126,6 @@ data:
         end: '2022-09-09 00:00:00'
   - name: imbalance_delta
     kind: csv
-    unit: MW
     path: /Users/samheiserman/Desktop/repos/htm-monitor/data/grid/caiso_2019fit_2020_2022_pad0p00/imbalance_delta.csv
     timestamp_col: timestamp
     timestamp_format: '%Y-%m-%d %H:%M:%S'
@@ -145,7 +141,6 @@ data:
         end: '2022-09-09 00:00:00'
   - name: imbalance_residual
     kind: csv
-    unit: MW
     path: /Users/samheiserman/Desktop/repos/htm-monitor/data/grid/caiso_2019fit_2020_2022_pad0p00/imbalance_residual.csv
     timestamp_col: timestamp
     timestamp_format: '%Y-%m-%d %H:%M:%S'
@@ -191,9 +186,4 @@ plot:
   show_ground_truth: true
   show_warmup_span: true
   max_label_len: 16
-  model_label_colors:
-    demand: tab:green
-    net_generation: tab:red
-    imbalance: tab:orange
-    imbalance_delta: tab:orange
-    imbalance_residual: tab:orange
+  label_color_mode: by_group
