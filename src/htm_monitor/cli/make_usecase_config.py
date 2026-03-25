@@ -16,6 +16,15 @@ import yaml
 @dataclass(frozen=True)
 class SourceSpec:
     """
+    Canonical GT contract:
+      event_windows = [
+        {"name": "...", "start": "...", "end": "..."},
+        ...
+      ]
+
+    Legacy gt_timestamps are accepted on input and normalized upstream.
+    """
+    """
     One CSV source with 1+ selected numeric feature columns.
 
     Example (NAB):
@@ -32,8 +41,10 @@ class SourceSpec:
     timestamp_format: str
     # canonical_feature_name -> csv_column_name
     fields: Dict[str, str]
-    # Optional ground-truth timestamps (strings matching timestamp_format).
-    gt_timestamps: Optional[List[str]] = None
+    # Optional display / domain metadata
+    unit: Optional[str] = None
+    # Optional canonical ground-truth windows.
+    event_windows: Optional[List[Dict[str, str]]] = None
 
     def __post_init__(self) -> None:
         # Fail fast: prevent configs that "serialize fine" but explode later.
@@ -47,6 +58,9 @@ class SourceSpec:
 
         if not isinstance(self.timestamp_col, str) or not self.timestamp_col.strip():
             raise TypeError("SourceSpec.timestamp_col must be a non-empty string")
+        if self.unit is not None:
+            if not isinstance(self.unit, str) or not self.unit.strip():
+                raise TypeError("SourceSpec.unit must be a non-empty string or None")
         if not isinstance(self.timestamp_format, str) or not self.timestamp_format.strip():
             raise TypeError("SourceSpec.timestamp_format must be a non-empty string")
 
@@ -72,15 +86,24 @@ class SourceSpec:
             seen_feat.add(feat)
             seen_cols.add(col)
 
-        if self.gt_timestamps is not None:
-            if not isinstance(self.gt_timestamps, list):
-                raise TypeError("SourceSpec.gt_timestamps must be a list[str] or None")
-            bad = [x for x in self.gt_timestamps if not isinstance(x, str) or not x.strip()]
-            if bad:
-                raise TypeError("SourceSpec.gt_timestamps entries must be non-empty strings")
-            # validate parse against this source's timestamp_format
-            for ts in self.gt_timestamps:
-                datetime.strptime(ts, self.timestamp_format)
+        if self.event_windows is not None:
+            if not isinstance(self.event_windows, list):
+                raise TypeError("SourceSpec.event_windows must be a list[dict] or None")
+            for i, ev in enumerate(self.event_windows):
+                if not isinstance(ev, Mapping):
+                    raise TypeError(f"SourceSpec.event_windows[{i}] must be a mapping")
+                start = ev.get("start")
+                end = ev.get("end")
+                if not isinstance(start, str) or not start.strip():
+                    raise TypeError(f"SourceSpec.event_windows[{i}].start must be a non-empty string")
+                if not isinstance(end, str) or not end.strip():
+                    raise TypeError(f"SourceSpec.event_windows[{i}].end must be a non-empty string")
+                datetime.strptime(start, self.timestamp_format)
+                datetime.strptime(end, self.timestamp_format)
+                if datetime.strptime(end, self.timestamp_format) < datetime.strptime(start, self.timestamp_format):
+                    raise ValueError(
+                        f"SourceSpec.event_windows[{i}] end must be >= start for source '{self.name}'"
+                    )
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
@@ -116,7 +139,21 @@ def sources_to_dicts(sources: Sequence[SourceSpec]) -> List[Dict[str, Any]]:
                 "timestamp_col": s.timestamp_col,
                 "timestamp_format": s.timestamp_format,
                 "fields": dict(s.fields),
-                "gt_timestamps": list(s.gt_timestamps) if s.gt_timestamps else None,
+                **({"unit": s.unit} if s.unit else {}),
+                "labels": (
+                    {
+                        "event_windows": [
+                            {
+                                "name": ev.get("name", ""),
+                                "start": ev["start"],
+                                "end": ev["end"],
+                            }
+                            for ev in s.event_windows
+                        ]
+                    }
+                    if s.event_windows
+                    else None
+                ),
             }
         )
     return out
@@ -162,16 +199,55 @@ def sources_from_dicts(raw: Sequence[Mapping[str, Any]]) -> List[SourceSpec]:
         bad_field_keys = [k for k in fields.keys() if not isinstance(k, str)]
         if bad_field_keys:
             raise ValueError(f"sources[{i}].fields must have string keys; got: {bad_field_keys}")
-        out.append(
-            SourceSpec(
-                name=str(d["name"]).strip(),
-                path=str(d["path"]).strip(),
-                timestamp_col=str(d["timestamp_col"]).strip(),
-                timestamp_format=str(d["timestamp_format"]).strip(),
-                fields=dict(fields),
-                gt_timestamps=gt_list,
-            )
-        )
+        event_windows: Optional[List[Dict[str, str]]] = None
+
+        # canonical path
+        labels = d.get("labels")
+        if labels is not None:
+            if not isinstance(labels, Mapping):
+                raise ValueError(f"sources[{i}].labels must be a mapping if provided")
+            evs = labels.get("event_windows")
+            if evs is not None:
+                if not isinstance(evs, list):
+                    raise ValueError(f"sources[{i}].labels.event_windows must be a list")
+                event_windows = []
+                for j, ev in enumerate(evs):
+                    if not isinstance(ev, Mapping):
+                        raise ValueError(f"sources[{i}].labels.event_windows[{j}] must be a mapping")
+                    start = ev.get("start")
+                    end = ev.get("end")
+                    name = ev.get("name")
+                    if not isinstance(start, str) or not start.strip():
+                        raise ValueError(f"sources[{i}].labels.event_windows[{j}].start must be a non-empty string")
+                    if not isinstance(end, str) or not end.strip():
+                        raise ValueError(f"sources[{i}].labels.event_windows[{j}].end must be a non-empty string")
+                    event_windows.append(
+                        {
+                            "name": str(name).strip() if isinstance(name, str) and name.strip() else "",
+                            "start": start.strip(),
+                            "end": end.strip(),
+                        }
+                    )
+            elif gt_list:
+                # legacy labels.timestamps -> singleton windows
+                event_windows = [{"name": "", "start": ts, "end": ts} for ts in gt_list]
+        elif gt_list:
+            # legacy top-level gt_timestamps
+            event_windows = [{"name": "", "start": ts, "end": ts} for ts in gt_list]
+
+        out.append(SourceSpec(
+            name=str(d["name"]).strip(),
+            path=str(d["path"]).strip(),
+            timestamp_col=str(d["timestamp_col"]).strip(),
+            timestamp_format=str(d["timestamp_format"]).strip(),
+            fields=dict(fields),
+            unit=(
+                str(d.get("unit")).strip()
+                if d.get("unit") is not None and str(d.get("unit")).strip()
+                else None
+            ),
+            event_windows=event_windows,
+        ))
     return out
 
 
@@ -199,13 +275,13 @@ def _require_positive_int(name: str, v: Any) -> int:
     return iv
 
 
-def _require_float_in_open01(name: str, v: Any) -> float:
+def _require_float_in_closed01(name: str, v: Any) -> float:
     try:
         fv = float(v)
     except Exception:
         raise ValueError(f"{name} must be a float")
-    if not (0.0 < fv < 1.0):
-        raise ValueError(f"{name} must satisfy 0 < {name} < 1")
+    if not (0.0 <= fv <= 1.0):
+        raise ValueError(f"{name} must satisfy 0 <= {name} < 1")
     return fv
 
 
@@ -218,8 +294,8 @@ def calibrate_min_max(
     floor: Optional[float] = None,
     ceil: Optional[float] = None,
 ) -> Tuple[float, float]:
-    if not (0.0 < low_q < high_q < 1.0):
-        raise ValueError("low_q/high_q must satisfy 0 < low_q < high_q < 1")
+    if not (0.0 <= low_q < high_q <= 1.0):
+        raise ValueError("low_q/high_q must satisfy 0 <= low_q < high_q <= 1")
     if margin < 0.0:
         raise ValueError("margin must be >= 0")
 
@@ -283,11 +359,17 @@ def build_usecase_config(
     on_missing: str = "hold_last",
     # decision defaults
     decision_score_key: str = "anomaly_probability",
-    decision_threshold: float = 0.997,
+    decision_threshold: float = 0.99,
     decision_method: str = "kofn_window",
     decision_k: int = 2,
-    decision_window_size: int = 24,
-    decision_per_model_hits: int = 2,
+    decision_window_size: int = 12,
+    decision_per_model_hits: int = 5,
+    # decision grouping (online / production semantics)
+    decision_grouping_enabled: bool = False,
+    decision_grouping_k: Optional[int] = None,
+    decision_grouping_min_consecutive_group_steps: int = 1,
+    decision_grouping_min_alert_len: int = 1,
+    decision_grouping_groups: Optional[Mapping[str, Sequence[str]]] = None,
     # run lifecycle defaults
     run_warmup_steps: int = 0,
     run_learn_after_warmup: bool = True,
@@ -298,8 +380,11 @@ def build_usecase_config(
     plot_enable: bool = True,
     plot_window: int = 1000,
     plot_show_ground_truth: bool = True,
-    plot_step_pause_s: float = 0.01,
+    plot_step_pause_s: float = 0.0001,
     plot_show_warmup_span: bool = True,
+    plot_max_label_len: int = 16,
+    plot_label_color_mode: str = "by_group",
+    plot_model_label_colors: Optional[Mapping[str, str]] = None,
     # optional frozen overrides (picked once via wizard)
     feature_overrides: Optional[Mapping[str, Mapping[str, float]]] = None,
 ) -> Dict[str, Any]:
@@ -319,8 +404,8 @@ def build_usecase_config(
     if rdse_active_bits > rdse_size:
         raise ValueError("rdse_active_bits must be <= rdse_size")
 
-    low_q = _require_float_in_open01("low_q", low_q)
-    high_q = _require_float_in_open01("high_q", high_q)
+    low_q = _require_float_in_closed01("low_q", low_q)
+    high_q = _require_float_in_closed01("high_q", high_q)
     if not (low_q < high_q):
         raise ValueError("low_q/high_q must satisfy low_q < high_q")
     if float(margin) < 0.0:
@@ -336,6 +421,10 @@ def build_usecase_config(
     if run_warmup_steps < 0:
         raise ValueError("run_warmup_steps must be >= 0")
     run_learn_after_warmup = bool(run_learn_after_warmup)
+    plot_max_label_len = _require_positive_int("plot_max_label_len", plot_max_label_len)
+    plot_label_color_mode = str(plot_label_color_mode).strip().lower()
+    if plot_label_color_mode not in {"by_group", "explicit", "none"}:
+        raise ValueError("plot_label_color_mode must be one of: by_group, explicit, none")
 
     gt_system_per_source_hits = int(gt_system_per_source_hits)
     if gt_system_per_source_hits <= 0:
@@ -345,14 +434,13 @@ def build_usecase_config(
     features: Dict[str, Any] = {
         "timestamp": {
             "type": "datetime",
-            # NAB convention; user can edit after generation if needed
             "format": "%Y-%m-%d %H:%M:%S",
-            # DateEncoder: must have at least one > 0
             "timeOfDay": 21,
             "weekend": 0,
             "dayOfWeek": 0,
             "holiday": 0,
             "season": 0,
+            "encode": False
         }
     }
 
@@ -415,13 +503,13 @@ def build_usecase_config(
                 model_name = f"{feat_name}_model"
                 models[model_name] = {
                     "sources": [src.name],
-                    "features": ["timestamp", feat_name],
+                    "features": [feat_name],
                 }
     elif model_layout == "single":
         # one model for everything; include all sources; include all features
         models[f"{usecase}_model"] = {
             "sources": [s.name for s in sources],
-            "features": ["timestamp"] + list(all_feature_names),
+            "features": list(all_feature_names),
         }
     elif model_layout == "chunk":
         # stable chunking order: all_feature_names in the order collected
@@ -437,7 +525,7 @@ def build_usecase_config(
                     chunk_sources.append(src.name)
             models[model_name] = {
                 "sources": chunk_sources,
-                "features": ["timestamp"] + chunk,
+                "features": chunk,
             }
 
     # ---- Data sources ----
@@ -448,33 +536,62 @@ def build_usecase_config(
                 "name": src.name,
                 "kind": "csv",
                 "path": src.path,
+                **({"unit": src.unit} if src.unit else {}),
                 "timestamp_col": src.timestamp_col,
                 "timestamp_format": src.timestamp_format,
                 "fields": dict(src.fields),
                 **(
-                    {"labels": {"timestamps": list(src.gt_timestamps)}}
-                    if src.gt_timestamps
-                    else {}
+                    {
+                        "labels": {
+                            "event_windows": [
+                                (
+                                    {"name": ev["name"], "start": ev["start"], "end": ev["end"]}
+                                    if ev.get("name")
+                                    else {"start": ev["start"], "end": ev["end"]}
+                                )
+                                for ev in src.event_windows
+                            ]
+                        }
+                    } if src.event_windows else {}
                 ),
             }
         )
 
-    # Emit ground_truth only when at least one source has labels.
-    has_any_gt = any(bool(s.gt_timestamps) for s in sources)
-    ground_truth: Optional[Dict[str, Any]] = None
-    if has_any_gt:
-        ground_truth = {
-            "system": {
-                "method": "kofn_window",
-                "k": int(decision_k),
-                "window": {
-                    "size": int(gt_system_window_size)
-                    if gt_system_window_size is not None
-                    else int(decision_window_size),
-                    "per_source_hits": int(gt_system_per_source_hits),
-                },
-            }
+    grouping_cfg: Optional[Dict[str, Any]] = None
+    if decision_grouping_enabled or decision_grouping_groups:
+        groups_clean: Dict[str, List[str]] = {}
+        valid_models = set(models.keys())
+        for gname, members in (decision_grouping_groups or {}).items():
+            g = str(gname).strip()
+            if not g:
+                raise ValueError("decision_grouping_groups keys must be non-empty strings")
+            if not isinstance(members, Sequence) or len(members) == 0:
+                raise ValueError(f"decision_grouping_groups['{g}'] must be a non-empty sequence")
+            member_list = [str(m).strip() for m in members if str(m).strip()]
+            if not member_list:
+                raise ValueError(f"decision_grouping_groups['{g}'] must contain at least one model")
+            unknown = [m for m in member_list if m not in valid_models]
+            if unknown:
+                raise ValueError(
+                    f"decision_grouping_groups['{g}'] contains unknown model(s): {unknown}. "
+                    f"Valid models: {sorted(valid_models)}"
+                )
+            groups_clean[g] = member_list
+
+        grouping_cfg = {
+            "enabled": bool(decision_grouping_enabled or groups_clean),
+            "k": int(decision_grouping_k) if decision_grouping_k is not None else int(decision_k),
+            "min_consecutive_group_steps": int(decision_grouping_min_consecutive_group_steps),
+            "min_alert_len": int(decision_grouping_min_alert_len),
+            "groups": groups_clean,
         }
+
+    plot_label_colors_cfg: Optional[Dict[str, str]] = None
+    if plot_label_color_mode == "explicit":
+        raw = dict(plot_model_label_colors or {})
+        if not raw:
+            raise ValueError("plot_model_label_colors must be provided when plot_label_color_mode='explicit'")
+        plot_label_colors_cfg = {str(k): str(v) for k, v in raw.items()}
 
     cfg: Dict[str, Any] = {
         "features": features,
@@ -500,18 +617,20 @@ def build_usecase_config(
                 "size": int(decision_window_size),
                 "per_model_hits": int(decision_per_model_hits),
             },
+            **({"grouping": grouping_cfg} if grouping_cfg is not None else {}),
         },
+
         "plot": {
             "enable": bool(plot_enable),
             "step_pause_s": float(plot_step_pause_s),
             "window": int(plot_window),
             "show_ground_truth": bool(plot_show_ground_truth),
             "show_warmup_span": bool(plot_show_warmup_span),
+            "max_label_len": int(plot_max_label_len),
+            "label_color_mode": str(plot_label_color_mode),
+            **({"model_label_colors": plot_label_colors_cfg} if plot_label_colors_cfg is not None else {}),
         },
     }
-
-    if ground_truth is not None:
-        cfg["ground_truth"] = ground_truth
 
     return cfg
 
@@ -560,16 +679,81 @@ def _parse_ts_list(raw: str) -> List[str]:
     return [x for x in items if x]
 
 
-def _validate_gt_timestamps(ts_list: List[str], ts_format: str) -> List[str]:
-    # de-dupe but preserve order (stable)
-    seen: Set[str] = set()
-    out: List[str] = []
-    for ts in ts_list:
-        datetime.strptime(ts, ts_format)  # raises if invalid
-        if ts not in seen:
-            seen.add(ts)
-            out.append(ts)
+def _parse_event_window_line(raw: str, ts_format: str) -> Dict[str, str]:
+    parts = [x.strip() for x in str(raw).split("|")]
+    if len(parts) != 3:
+        raise ValueError(
+            "Event window must be: name|YYYY-mm-dd HH:MM:SS|YYYY-mm-dd HH:MM:SS"
+        )
+    name, start, end = parts
+    if not name:
+        raise ValueError("Event window name cannot be empty")
+    start_dt = datetime.strptime(start, ts_format)
+    end_dt = datetime.strptime(end, ts_format)
+    if end_dt < start_dt:
+        raise ValueError("Event window end must be >= start")
+    return {"name": name, "start": start, "end": end}
+
+
+def _validate_event_windows(
+    windows: List[Dict[str, str]],
+    ts_format: str,
+) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    seen = set()
+    for i, ev in enumerate(windows):
+        name = str(ev.get("name") or "").strip()
+        start = str(ev.get("start") or "").strip()
+        end = str(ev.get("end") or "").strip()
+
+        if not start or not end:
+            raise ValueError(f"event_windows[{i}] must contain start/end")
+
+        start_dt = datetime.strptime(start, ts_format)
+        end_dt = datetime.strptime(end, ts_format)
+        if end_dt < start_dt:
+            raise ValueError(f"event_windows[{i}] end must be >= start")
+
+        key = (name, start, end)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        out.append({"name": name, "start": start, "end": end})
     return out
+
+
+def _load_event_windows_from_file(
+    spec: str,
+    *,
+    source_name: str,
+    default_key: str,
+    ts_format: str,
+) -> Optional[List[Dict[str, str]]]:
+    raw = (spec or "").strip()
+    if not raw.startswith("@file:"):
+        return None
+
+    path = raw[len("@file:"):].strip()
+    p = Path(path)
+    if not p.exists():
+        raise ValueError(f"Event-window file does not exist: {p}")
+
+    blob = json.loads(p.read_text())
+
+    candidate = None
+    if isinstance(blob, list):
+        candidate = blob
+    elif isinstance(blob, dict):
+        for k in (source_name, default_key, "event_windows"):
+            if k in blob:
+                candidate = blob[k]
+                break
+
+    if not isinstance(candidate, list):
+        raise ValueError("Event-window file must resolve to list")
+
+    return _validate_event_windows(candidate, ts_format)
 
 
 def _load_gt_from_file(spec: str, *, source_name: str, default_key: str) -> Optional[List[str]]:
@@ -623,6 +807,7 @@ def collect_sources_interactive() -> List[SourceSpec]:
         print(f"Detected columns: {cols}")
 
         name = _prompt("Source name (identifier)", p.stem)
+        unit = _prompt("Unit (blank=None)", "").strip() or None
         ts_col = _prompt("Timestamp column", "timestamp")
         ts_fmt = _prompt("Timestamp format", "%Y-%m-%d %H:%M:%S")
         # Phase 2A: allow multiple numeric columns (comma-separated).
@@ -649,17 +834,33 @@ def collect_sources_interactive() -> List[SourceSpec]:
         if not fields:
             raise ValueError("You must select at least one numeric column")
 
-        print("\n(Optional) Ground truth timestamps for this source.")
-        print("Enter comma-separated timestamps matching the timestamp format, or leave blank.")
-        print("Or: @file:<path/to/gt_timestamps.json> to load a list from file.")
-        raw_gt = _prompt("Ground truth timestamps", "")
-        gt = None
-        if raw_gt.strip():
-            loaded = _load_gt_from_file(raw_gt, source_name=name, default_key=p.stem)
+        print("\n(Optional) Ground-truth event windows for this source.")
+        print("Enter one per line as:")
+        print("  name|YYYY-mm-dd HH:MM:SS|YYYY-mm-dd HH:MM:SS")
+        print("Press Enter on empty line when done.")
+        print("Or enter once:")
+        print("  @file:/path/to/event_windows.json")
+
+        event_windows: Optional[List[Dict[str, str]]] = None
+        first = _prompt("Event window", "").strip()
+
+        if first:
+            loaded = _load_event_windows_from_file(
+                first,
+                source_name=name,
+                default_key=p.stem,
+                ts_format=ts_fmt,
+            )
             if loaded is not None:
-                gt = _validate_gt_timestamps(loaded, ts_fmt)
+                event_windows = loaded
             else:
-                gt = _validate_gt_timestamps(_parse_ts_list(raw_gt), ts_fmt)
+                buf = [_parse_event_window_line(first, ts_fmt)]
+                while True:
+                    nxt = _prompt("Event window", "").strip()
+                    if not nxt:
+                        break
+                    buf.append(_parse_event_window_line(nxt, ts_fmt))
+                event_windows = _validate_event_windows(buf, ts_fmt)
 
         out.append(
             SourceSpec(
@@ -668,7 +869,7 @@ def collect_sources_interactive() -> List[SourceSpec]:
                 timestamp_col=ts_col,
                 timestamp_format=ts_fmt,
                 fields=fields,
-                gt_timestamps=gt,
+                event_windows=event_windows,
             )
         )
     return out

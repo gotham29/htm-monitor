@@ -1,3 +1,5 @@
+#diagnostics/encoding_sanity.py
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -34,8 +36,8 @@ def summarize_range(
     Compute a stable encoder range from data via quantiles + margin.
     Also report clip rates for sanity checking.
     """
-    if not (0.0 < low_q < high_q < 1.0):
-        raise ValueError("low_q/high_q must satisfy 0 < low_q < high_q < 1")
+    if not (0.0 <= low_q < high_q <= 1.0):
+        raise ValueError("low_q/high_q must satisfy 0 <= low_q < high_q <= 1")
     if margin < 0.0:
         raise ValueError("margin must be >= 0")
 

@@ -13,17 +13,7 @@ UNIT_ID = 34
 START_TS = "2000-01-01 00:00:00"
 FREQ = "1H"
 
-# First-pass demo subset: strong, interpretable, and still plottable.
-SELECTED_SENSORS: List[str] = [
-    "sensor_9",
-    "sensor_14",
-    "sensor_4",
-    "sensor_3",
-    "sensor_17",
-    "sensor_7",
-    "sensor_12",
-    "sensor_11",
-]
+SELECTED_SENSORS: List[str] = []
 
 
 def _repo_root() -> Path:
@@ -33,6 +23,10 @@ def _repo_root() -> Path:
 def _fmt_ts(series: pd.Series) -> List[str]:
     ts = pd.to_datetime(series)
     return [t.strftime("%Y-%m-%d %H:%M:%S") for t in ts]
+
+
+def _all_sensor_columns(df: pd.DataFrame) -> List[str]:
+    return sorted([c for c in df.columns if c.startswith("sensor_")], key=lambda s: int(s.split("_")[1]))
 
 
 def main() -> None:
@@ -53,6 +47,10 @@ def main() -> None:
 
     unit_df = unit_df.sort_values("cycle", kind="mergesort").reset_index(drop=True)
 
+    sensors = list(SELECTED_SENSORS) if SELECTED_SENSORS else _all_sensor_columns(unit_df)
+    if not sensors:
+        raise ValueError("No sensor_* columns available for unit demo generation")
+
     # Synthetic timestamp so the existing HTM-Monitor pipeline can consume it directly.
     # One cycle = one hour for demo purposes.
     unit_df["timestamp"] = _fmt_ts(
@@ -65,7 +63,7 @@ def main() -> None:
 
     # Write one CSV per selected sensor in the repo's standard demo style:
     # timestamp,value
-    for sensor in SELECTED_SENSORS:
+    for sensor in sensors:
         if sensor not in unit_df.columns:
             raise ValueError(f"Missing expected sensor column: {sensor}")
 
@@ -83,8 +81,9 @@ def main() -> None:
     manifest = {
         "dataset": "CMAPSS_FD001",
         "unit_id": UNIT_ID,
+        "all_available_sensors": _all_sensor_columns(unit_df),
         "source_csv": str(src_csv),
-        "selected_sensors": SELECTED_SENSORS,
+        "selected_sensors": sensors,
         "n_cycles": int(len(unit_df)),
         "cycle_min": int(unit_df["cycle"].min()),
         "cycle_max": int(unit_df["cycle"].max()),
@@ -114,7 +113,7 @@ def main() -> None:
     print("Built CMAPSS FD001 unit demo artifacts:")
     print(f"  {out_dir}")
     print(f"  unit_id={UNIT_ID}")
-    print(f"  sensors={SELECTED_SENSORS}")
+    print(f"  sensors={sensors}")
     print(f"  late_life_30 GT count={len(gt_30)}")
 
 

@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
+import json
 import yaml
 
 from .make_usecase_config import build_usecase_config, sources_from_dicts
@@ -26,12 +27,35 @@ def _load_yaml_mapping(path: Path) -> Dict[str, Any]:
     return raw
 
 
+def _load_feature_overrides_from_stats_json(path: Path) -> Dict[str, Dict[str, float]]:
+    raw = json.loads(path.read_text())
+    if not isinstance(raw, dict):
+        raise ValueError("feature_stats.json must be a mapping")
+    out: Dict[str, Dict[str, float]] = {}
+    for feat, payload in raw.items():
+        if feat in {"meta", "event_windows", "event_timestamps", "labels_by_source", "feature_overrides"}:
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        if "minVal" in payload and "maxVal" in payload:
+            out[str(feat)] = {
+                "minVal": float(payload["minVal"]),
+                "maxVal": float(payload["maxVal"]),
+            }
+    if "feature_overrides" in raw and isinstance(raw["feature_overrides"], Mapping):
+        for feat, payload in raw["feature_overrides"].items():
+            if not isinstance(payload, Mapping):
+                continue
+            out[str(feat)] = {"minVal": float(payload["minVal"]), "maxVal": float(payload["maxVal"])}
+    return out
+
+
 def _normalize_sources_inplace(sources_raw: List[Dict[str, Any]]) -> None:
     """
     Spec format convenience:
       - allow source.gt_timestamps: [<ts_str>, ...]
-    Canonical config format (consumed by run_pipeline):
-      - source.labels.timestamps: [<ts_str>, ...]
+    Canonical config format:
+      - source.labels.event_windows: [{start, end, name?}, ...]
 
     We normalize the spec in-place so downstream config generation is consistent.
     """
@@ -51,7 +75,12 @@ def _normalize_sources_inplace(sources_raw: List[Dict[str, Any]]) -> None:
             gt = s.get("gt_timestamps")
             # Move to canonical spot
             s.pop("gt_timestamps", None)
-            s["labels"] = {"timestamps": gt}
+            s["labels"] = {
+                "event_windows": [
+                    {"start": ts, "end": ts}
+                    for ts in gt
+                ]
+            }
 
         # Spec convenience: allow "labels: {}" (or null) without timestamps.
         # If present but empty, drop it so downstream config generation is clean.
@@ -141,6 +170,10 @@ def main() -> None:
     feature_overrides = None
     if isinstance(overrides, dict):
         feats = overrides.get("features")
+        from_stats = overrides.get("from_feature_stats_json")
+        if from_stats:
+            stats_overrides = _load_feature_overrides_from_stats_json(Path(str(from_stats)))
+            feats = {**stats_overrides, **(feats or {})}
         if feats is not None and not isinstance(feats, dict):
             raise ValueError("Spec.overrides.features must be a mapping if provided")
         feature_overrides = feats
