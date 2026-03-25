@@ -869,6 +869,7 @@ def collect_sources_interactive() -> List[SourceSpec]:
                 timestamp_col=ts_col,
                 timestamp_format=ts_fmt,
                 fields=fields,
+                unit=unit,
                 event_windows=event_windows,
             )
         )

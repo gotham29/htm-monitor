@@ -81,7 +81,8 @@ data:
   sources:
   - name: demand
     kind: csv
-    path: /Users/samheiserman/Desktop/repos/htm-monitor/data/grid/caiso_2019fit_2020_2022_pad0p00/demand.csv
+    path: /Users/samheiserman/Desktop/repos/htm-monitor/data/powergrid_ca/caiso_2019fit_2020_2022_pad0p00/demand.csv
+    unit: MW
     timestamp_col: timestamp
     timestamp_format: '%Y-%m-%d %H:%M:%S'
     fields:
@@ -96,7 +97,8 @@ data:
         end: '2022-09-09 00:00:00'
   - name: net_generation
     kind: csv
-    path: /Users/samheiserman/Desktop/repos/htm-monitor/data/grid/caiso_2019fit_2020_2022_pad0p00/net_generation.csv
+    path: /Users/samheiserman/Desktop/repos/htm-monitor/data/powergrid_ca/caiso_2019fit_2020_2022_pad0p00/net_generation.csv
+    unit: MW
     timestamp_col: timestamp
     timestamp_format: '%Y-%m-%d %H:%M:%S'
     fields:
@@ -111,7 +113,8 @@ data:
         end: '2022-09-09 00:00:00'
   - name: imbalance
     kind: csv
-    path: /Users/samheiserman/Desktop/repos/htm-monitor/data/grid/caiso_2019fit_2020_2022_pad0p00/imbalance.csv
+    path: /Users/samheiserman/Desktop/repos/htm-monitor/data/powergrid_ca/caiso_2019fit_2020_2022_pad0p00/imbalance.csv
+    unit: MW
     timestamp_col: timestamp
     timestamp_format: '%Y-%m-%d %H:%M:%S'
     fields:
@@ -126,7 +129,8 @@ data:
         end: '2022-09-09 00:00:00'
   - name: imbalance_delta
     kind: csv
-    path: /Users/samheiserman/Desktop/repos/htm-monitor/data/grid/caiso_2019fit_2020_2022_pad0p00/imbalance_delta.csv
+    path: /Users/samheiserman/Desktop/repos/htm-monitor/data/powergrid_ca/caiso_2019fit_2020_2022_pad0p00/imbalance_delta.csv
+    unit: MW
     timestamp_col: timestamp
     timestamp_format: '%Y-%m-%d %H:%M:%S'
     fields:
@@ -141,7 +145,8 @@ data:
         end: '2022-09-09 00:00:00'
   - name: imbalance_residual
     kind: csv
-    path: /Users/samheiserman/Desktop/repos/htm-monitor/data/grid/caiso_2019fit_2020_2022_pad0p00/imbalance_residual.csv
+    path: /Users/samheiserman/Desktop/repos/htm-monitor/data/powergrid_ca/caiso_2019fit_2020_2022_pad0p00/imbalance_residual.csv
+    unit: MW
     timestamp_col: timestamp
     timestamp_format: '%Y-%m-%d %H:%M:%S'
     fields:
