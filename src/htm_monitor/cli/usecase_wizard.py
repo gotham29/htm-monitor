@@ -7,7 +7,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Mapping
+from typing import Any, Dict, List, Optional, Mapping, Sequence
 
 import yaml
 import pandas as pd
@@ -120,17 +120,60 @@ def _prompt_optional_float_default(msg: str, default: Optional[float]) -> Option
     return float(raw)
 
 
+def _parse_csv_list(raw: str) -> List[str]:
+    items = [x.strip() for x in (raw or "").split(",")]
+    return [x for x in items if x]
+
+
+def _default_group_palette() -> List[str]:
+    # Avoid black (signal) and blue (anomaly score)
+    return [
+        "tab:green",
+        "tab:red",
+        "tab:orange",
+        "tab:purple",
+        "tab:brown",
+        "tab:pink",
+        "tab:olive",
+        "tab:cyan",
+    ]
+
+
+def _derive_model_names(
+    usecase: str,
+    sources: Sequence[Any],
+    model_layout: str,
+    chunk_size: int,
+) -> List[str]:
+    all_feature_names: List[str] = []
+    for src in sources:
+        for feat_name in src.fields.keys():
+            all_feature_names.append(str(feat_name))
+
+    if model_layout == "separate":
+        return [f"{feat_name}_model" for feat_name in all_feature_names]
+    if model_layout == "single":
+        return [f"{usecase}_model"]
+    if model_layout == "chunk":
+        k = int(chunk_size)
+        return [
+            f"{usecase}_chunk_{(i // k) + 1}_model"
+            for i in range(0, len(all_feature_names), k)
+        ]
+    raise ValueError("model_layout must be one of: separate, single, chunk")
+
+
 def run_interactive() -> UsecaseBuildSpec:
     usecase = _require_safe_usecase_name(_prompt("Use-case name"))
 
     print("\n--- Calibration policy (used for preview plots + default config) ---")
     low_q = _prompt_float("low_q", 0.01)
     high_q = _prompt_float("high_q", 0.99)
-    margin = _prompt_float("margin", 0.03)
-    hist_bins = _prompt_int("hist_bins (linear)", 80)
-    # For count-like signals (NAB tweets), we never want negative encoder mins.
-    # User can set blank to disable (None).
-    min_floor = _prompt_optional_float_default("min_floor (blank=None; for counts use 0)", 0.0)
+    margin = _prompt_float("margin", 0.05)
+    hist_bins = _prompt_int("hist_bins (linear)", 130)
+    # Default to no floor. A floor of 0 is only appropriate for inherently nonnegative signals.
+    # Signed signals (e.g. residuals/deltas) should usually leave this blank.
+    min_floor = _prompt_optional_float_default("min_floor (blank=None; use 0 only for nonnegative/count signals)", None)
 
     print("\n--- Sources ---")
     sources = collect_sources_interactive()
@@ -140,6 +183,7 @@ def run_interactive() -> UsecaseBuildSpec:
     chunk_size = 2
     if model_layout == "chunk":
         chunk_size = _prompt_int("Chunk size (features per model)", 2)
+    model_names = _derive_model_names(usecase, sources, model_layout, chunk_size)
 
     # Preview calibration now (show plots while wizard runs), allow one-shot overrides.
     print("\n--- Encoding sanity (preview + freeze min/max once) ---")
@@ -187,10 +231,14 @@ def run_interactive() -> UsecaseBuildSpec:
     print("\n--- Decision ---")
     decision_method = _prompt("decision.method", "kofn_window")
     decision_k = _prompt_int("decision.k", 2)
-    decision_window_size = _prompt_int("decision.window.size", 24)
-    decision_per_model_hits = _prompt_int("decision.window.per_model_hits", 2)
-    decision_threshold = _prompt_float("decision.threshold", 0.997)
+    decision_window_size = _prompt_int("decision.window.size", 12)
+    decision_per_model_hits = _prompt_int("decision.window.per_model_hits", 5)
+    decision_threshold = _prompt_float("decision.threshold", 0.99)
     decision_score_key = _prompt("decision.score_key", "anomaly_probability")
+
+    print("\n--- Timebase / ingestion ---")
+    timebase_mode = _prompt_choice("data.timebase.mode (union|intersection)", ["union", "intersection"], "union")
+    on_missing = _prompt_choice("data.timebase.on_missing (hold_last|skip)", ["hold_last", "skip"], "hold_last")
 
     print("\n--- Run lifecycle (warmup + learn policy) ---")
     run_warmup_steps = _prompt_int("run.warmup_steps (timesteps; 0 disables warmup)", 0)
@@ -203,6 +251,67 @@ def run_interactive() -> UsecaseBuildSpec:
         == "true"
     )
 
+    print("\n--- Decision grouping (online alert contract) ---")
+    print(f"Available models: {', '.join(model_names)}")
+    grouping_enabled = (
+        _prompt_choice(
+            "decision.grouping.enabled (true|false)",
+            ["true", "false"],
+            "true" if len(model_names) > 1 else "false",
+        ) == "true"
+    )
+
+    grouping_groups: Dict[str, List[str]] = {}
+    grouping_k: Optional[int] = None
+    grouping_min_consecutive_group_steps = 1
+    grouping_min_alert_len = 1
+    if grouping_enabled:
+        num_groups = _prompt_int("decision.grouping.num_groups", len(model_names))
+        for i in range(num_groups):
+            gname = _prompt(f"group {i+1} name", f"group_{i+1}").strip()
+            if not gname:
+                raise ValueError("Group name cannot be empty")
+            members_raw = _prompt(
+                f"models in {gname} (comma-separated)",
+                ",".join([model_names[min(i, len(model_names) - 1)]]),
+            )
+            members = _parse_csv_list(members_raw)
+            if not members:
+                raise ValueError(f"Group '{gname}' must contain at least one model")
+            unknown = [m for m in members if m not in model_names]
+            if unknown:
+                raise ValueError(f"Unknown model(s) in group '{gname}': {unknown}")
+            grouping_groups[gname] = members
+
+        grouping_k = _prompt_int("decision.grouping.k", min(2, len(grouping_groups)))
+        grouping_min_consecutive_group_steps = _prompt_int("decision.grouping.min_consecutive_group_steps", 2)
+        grouping_min_alert_len = _prompt_int("decision.grouping.min_alert_len", 6)
+
+    print("\n--- Plot / live-view label settings ---")
+    plot_max_label_len = _prompt_int("plot.max_label_len", 16)
+    plot_label_color_mode = _prompt_choice(
+        "plot.label_color_mode (by_group|explicit|none)",
+        ["by_group", "explicit", "none"],
+        "by_group",
+    )
+
+    plot_model_label_colors: Optional[Dict[str, str]] = None
+    if plot_label_color_mode == "explicit":
+        palette = _default_group_palette()
+        plot_model_label_colors = {}
+        if grouping_enabled and grouping_groups:
+            print("Assign colors for each decision group label.")
+            for i, gname in enumerate(grouping_groups.keys()):
+                default_color = palette[i % len(palette)]
+                chosen = _prompt(f"color for group '{gname}'", default_color).strip() or default_color
+                plot_model_label_colors[str(gname)] = str(chosen)
+        else:
+            print("No grouping defined; assign colors for each model label.")
+            for i, mname in enumerate(model_names):
+                default_color = palette[i % len(palette)]
+                chosen = _prompt(f"color for model '{mname}'", default_color).strip() or default_color
+                plot_model_label_colors[str(mname)] = str(chosen)
+
     params: Dict[str, Any] = dict(
         rdse_size=rdse_size,
         rdse_active_bits=rdse_active_bits,
@@ -213,6 +322,8 @@ def run_interactive() -> UsecaseBuildSpec:
         margin=margin,
         model_layout=model_layout,
         chunk_size=chunk_size,
+        timebase_mode=timebase_mode,
+        on_missing=on_missing,
         decision_method=decision_method,
         decision_k=decision_k,
         decision_window_size=decision_window_size,
@@ -220,7 +331,15 @@ def run_interactive() -> UsecaseBuildSpec:
         decision_threshold=decision_threshold,
         decision_score_key=decision_score_key,
         run_warmup_steps=run_warmup_steps,
+        decision_grouping_enabled=grouping_enabled,
+        decision_grouping_k=grouping_k,
+        decision_grouping_min_consecutive_group_steps=grouping_min_consecutive_group_steps,
+        decision_grouping_min_alert_len=grouping_min_alert_len,
+        decision_grouping_groups=grouping_groups if grouping_enabled else None,
         run_learn_after_warmup=run_learn_after_warmup,
+        plot_max_label_len=plot_max_label_len,
+        plot_label_color_mode=plot_label_color_mode,
+        plot_model_label_colors=plot_model_label_colors,
     )
     _validate_params_mapping(params)
 

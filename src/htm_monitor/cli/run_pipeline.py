@@ -7,6 +7,7 @@ import json
 import sys
 import logging
 import time
+import yaml
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -45,8 +46,13 @@ def run(
                 "system_score": 0.0,
                 "alert": 0,
                 "hot_by_model": {},
-                # keep optional keys stable if decision emits them
                 "window_hot_by_model": {},
+                "active_groups": [],
+                "window_hot_by_group": {},
+                "num_window_hot_groups": 0,
+                "group_alert_eligible_now": 0,
+                "group_consecutive_count": 0,
+                "candidate_episode_len": 0,
             }
         else:
             result = decision.step(model_outputs)
@@ -64,7 +70,8 @@ class _SourceCfg:
     timestamp_col: str
     timestamp_format: str
     fields: Dict[str, str]  # canonical_name -> column_name
-    gt_timestamps: Optional[Set[str]] = None  # inline ground truth timestamps
+    unit: Optional[str] = None
+    event_windows: Optional[List[Dict[str, str]]] = None
 
 
 def _parse_ts(s: str, fmt: str) -> datetime:
@@ -127,52 +134,147 @@ def _timebase_intersection(iters: Dict[str, Iterator[Tuple[datetime, Dict[str, A
         yield rows
 
 
-def _parse_gt_timestamps(labels: Mapping[str, Any], ts_format: str) -> Optional[Set[str]]:
-    """
-    Parse labels.timestamps as a set of timestamp strings.
-    We keep strings because the plot uses the CSV's raw timestamp strings.
-    Validate format by attempting datetime.strptime for each entry.
-    """
+def _parse_event_windows(labels: Mapping[str, Any], ts_format: str) -> Optional[List[Dict[str, str]]]: 
     if not isinstance(labels, Mapping):
         return None
-    ts_list = labels.get("timestamps")
-    if ts_list is None:
-        return None
-    if not isinstance(ts_list, list):
-        raise ValueError("labels.timestamps must be a list of timestamp strings")
+    evs = labels.get("event_windows")
+    if evs is None:
+         return None
+    if not isinstance(evs, list):
+        raise ValueError("labels.event_windows must be a list")
 
-    out: Set[str] = set()
-    for v in ts_list:
-        if not isinstance(v, str):
-            raise ValueError("labels.timestamps entries must be strings")
-        _parse_ts(v, ts_format)  # validation
-        out.add(v)
+    out: List[Dict[str, str]] = []
+    for i, ev in enumerate(evs):
+        if not isinstance(ev, Mapping):
+            raise ValueError(f"labels.event_windows[{i}] must be a mapping")
+        start = ev.get("start")
+        end = ev.get("end")
+        name = ev.get("name", "")
+        if not isinstance(start, str) or not start.strip():
+            raise ValueError(f"labels.event_windows[{i}].start must be a non-empty string")
+        if not isinstance(end, str) or not end.strip():
+            raise ValueError(f"labels.event_windows[{i}].end must be a non-empty string")
+        _parse_ts(start, ts_format)
+        _parse_ts(end, ts_format)
+        out.append(
+            {
+                "name": str(name).strip() if isinstance(name, str) else "",
+                "start": start,
+                "end": end,
+            }
+        )
     return out
-
 
 def _load_sources(cfg: dict) -> Dict[str, _SourceCfg]:
     out: Dict[str, _SourceCfg] = {}
     for s in cfg["data"]["sources"]:
         labels = s.get("labels") or {}
-        gt = _parse_gt_timestamps(labels, s["timestamp_format"])
+        event_windows = _parse_event_windows(labels, s["timestamp_format"])
         out[s["name"]] = _SourceCfg(
             name=s["name"],
             path=s["path"],
             timestamp_col=s["timestamp_col"],
             timestamp_format=s["timestamp_format"],
+            unit=str(s.get("unit")).strip() if s.get("unit") is not None else None,
             fields=dict(s.get("fields") or {}),
-            gt_timestamps=gt,
+            event_windows=event_windows,
         )
     return out
 
 
-def _load_gt_by_source(sources: Dict[str, _SourceCfg], enabled: bool) -> Optional[Dict[str, set]]:
+def _ts_in_event_windows(ts: Optional[str], event_windows: Optional[List[Dict[str, str]]]) -> bool:
+    if ts is None or not event_windows:
+        return False
+    for ev in event_windows:
+        start = ev.get("start")
+        end = ev.get("end")
+        if start is not None and end is not None and start <= ts <= end:
+            return True
+    return False
+
+
+def _load_gt_by_source(sources: Dict[str, _SourceCfg], enabled: bool) -> Optional[Dict[str, List[Dict[str, str]]]]:
     if not enabled:
         return None
-    out: Dict[str, set] = {}
+    out: Dict[str, List[Dict[str, str]]] = {}
     for name, s in sources.items():
-        if s.gt_timestamps:
-            out[name] = set(s.gt_timestamps)
+        if s.event_windows:
+            out[name] = list(s.event_windows)
+    return out
+
+
+def _pad_limits(vmin: float, vmax: float) -> Tuple[float, float]:
+    if vmax < vmin:
+        vmin, vmax = vmax, vmin
+    span = vmax - vmin
+    if span <= 0.0:
+        pad = max(1.0, abs(vmin) * 0.05, 0.5)
+    else:
+        pad = max(span * 0.08, 0.5)
+    return (vmin - pad, vmax + pad)
+
+
+def _source_feature_minmax(src: _SourceCfg) -> Dict[str, Tuple[float, float]]:
+    """
+    Scan one source CSV and compute min/max for each canonical feature listed in src.fields.
+    Returns canonical feature -> (min, max).
+    """
+    out: Dict[str, Tuple[float, float]] = {}
+    mins: Dict[str, float] = {}
+    maxs: Dict[str, float] = {}
+
+    with open(src.path, "r", newline="") as f:
+        r = csv.DictReader(f)
+        for row in r:
+            for canon, col in src.fields.items():
+                raw = row.get(col)
+                if raw is None or raw == "":
+                    continue
+                try:
+                    val = float(raw)
+                except Exception:
+                    continue
+                if canon not in mins or val < mins[canon]:
+                    mins[canon] = val
+                if canon not in maxs or val > maxs[canon]:
+                    maxs[canon] = val
+
+    for canon in mins.keys():
+        out[canon] = (mins[canon], maxs[canon])
+    return out
+
+
+def _build_live_value_y_lims(
+    *,
+    sources: Dict[str, _SourceCfg],
+    model_sources: Dict[str, List[str]],
+    model_value_fields: Dict[str, List[str]],
+) -> Dict[str, Tuple[float, float]]:
+    """
+    Compute fixed y-limits for each model's value axis from the full source CSV(s),
+    so the live plot remains visually stable and never clips late peaks.
+    """
+    per_source_feature_mm: Dict[str, Dict[str, Tuple[float, float]]] = {}
+    for src_name, src_cfg in sources.items():
+        per_source_feature_mm[src_name] = _source_feature_minmax(src_cfg)
+
+    out: Dict[str, Tuple[float, float]] = {}
+    for model_name, feat_names in model_value_fields.items():
+        srcs = model_sources.get(model_name) or []
+        vals_min: List[float] = []
+        vals_max: List[float] = []
+
+        for feat in feat_names:
+            for src_name in srcs:
+                mm = per_source_feature_mm.get(src_name, {}).get(feat)
+                if mm is None:
+                    continue
+                vals_min.append(mm[0])
+                vals_max.append(mm[1])
+
+        if vals_min and vals_max:
+            out[model_name] = _pad_limits(min(vals_min), max(vals_max))
+
     return out
 
 
@@ -181,6 +283,65 @@ def _ts_any(rows_by_source: Mapping[str, Mapping[str, Any]]) -> Optional[str]:
         if r and r.get("timestamp"):
             return r.get("timestamp")
     return None
+
+
+def _load_predictive_warning_cfg(config_path: str) -> Optional[Dict[str, Any]]:
+    cfg = yaml.safe_load(Path(config_path).read_text())
+    if not isinstance(cfg, dict):
+        return None
+    evaluation = cfg.get("evaluation") or {}
+    if not isinstance(evaluation, dict):
+        return None
+    if str(evaluation.get("mode") or "").strip() != "predictive_warning":
+        return None
+    pw = evaluation.get("predictive_warning")
+    return pw if isinstance(pw, dict) else None
+
+
+def _predictive_live_plot_context(
+    *,
+    config_path: str,
+    sources: Dict[str, "_SourceCfg"],
+    stream_factory: Callable[[], Iterable[Mapping[str, Mapping[str, Any]]]],
+) -> Dict[str, Optional[int]]:
+    """
+    Precompute failure_t and warning-window t bounds for live plotting.
+
+    Assumption for current CMAPSS single-unit demo:
+      - the predictive target event is a shared failure timestamp present in all sources
+      - mapping timestamp -> t can be recovered from the same timebase stream used by the run
+    """
+    pw = _load_predictive_warning_cfg(config_path)
+    if not isinstance(pw, dict):
+        return {"failure_t": None, "warning_start_t": None, "warning_end_t": None}
+
+    ww = pw.get("warning_window") or {}
+    start_before = ww.get("start_steps_before_event")
+    end_before = ww.get("end_steps_before_event")
+    if not isinstance(start_before, int) or not isinstance(end_before, int):
+        return {"failure_t": None, "warning_start_t": None, "warning_end_t": None}
+
+    # current demo assumption: all source GT timestamps point to the same failure time
+    all_gt = sorted({ts for s in sources.values() for ts in (s.gt_timestamps or set())})
+    if not all_gt:
+        return {"failure_t": None, "warning_start_t": None, "warning_end_t": None}
+    failure_ts = all_gt[-1]
+
+    failure_t: Optional[int] = None
+    for t, rows_by_source in enumerate(stream_factory()):
+        ts_any = _ts_any(rows_by_source)
+        if ts_any == failure_ts:
+            failure_t = int(t)
+            break
+
+    if failure_t is None:
+        return {"failure_t": None, "warning_start_t": None, "warning_end_t": None}
+
+    return {
+        "failure_t": int(failure_t),
+        "warning_start_t": int(failure_t - start_before),
+        "warning_end_t": int(failure_t - end_before),
+    }
 
 
 def _configure_logging(level: str, log_file: Optional[str]) -> None:
@@ -266,8 +427,10 @@ def _write_manifest(
     learn_after_warmup: bool,
     decision_score_key_effective: str,
 ) -> Path:
-    gt_by_source = {name: sorted(list(sc.gt_timestamps or [])) for name, sc in sources.items() if sc.gt_timestamps}
-    gt_all: List[str] = sorted({ts for v in gt_by_source.values() for ts in v})
+    gt_by_source = {name: list(sc.event_windows or []) for name, sc in sources.items() if sc.event_windows}
+    gt_all: List[Dict[str, str]] = []
+    for windows in gt_by_source.values():
+        gt_all.extend(windows)
 
     manifest = {
         "generated_at_utc": datetime.utcnow().isoformat() + "Z",
@@ -481,40 +644,83 @@ def main() -> None:
         model_value_fields[model_name] = [f for f in feats if f != "timestamp"]
 
     sources = _load_sources(cfg)
-    iters = {name: _csv_events(sc) for name, sc in sources.items()}
     mode = (cfg.get("data", {}).get("timebase", {}).get("mode") or "union").lower()
     if mode not in ("union", "intersection"):
         raise ValueError("data.timebase.mode must be 'union' or 'intersection'")
-    stream = _timebase_intersection(iters) if mode == "intersection" else _timebase_union(iters)
+
+    model_units: Dict[str, str] = {}
+    for model_name, srcs in model_sources.items():
+        unit_val: Optional[str] = None
+        for s in (srcs or []):
+            sc = sources.get(s)
+            if sc is not None and isinstance(sc.unit, str) and sc.unit.strip():
+                unit_val = sc.unit.strip()
+                break
+        if unit_val:
+            model_units[model_name] = unit_val
+
+    def _make_stream():
+        iters = {name: _csv_events(sc) for name, sc in sources.items()}
+        return _timebase_intersection(iters) if mode == "intersection" else _timebase_union(iters)
+
+    stream = _make_stream()
 
     plot_cfg = cfg.get("plot") or {}
     plot = None
     show_gt = bool(plot_cfg.get("show_ground_truth"))
     gt_by_source = _load_gt_by_source(sources, show_gt)
-    # Derive SYSTEM GT timestamps (k-of-n overlap across sources)
-    system_gt_ts: Optional[Set[str]] = None
-    if gt_by_source:
-        # union across sources then require >=2 overlaps within same timestamp
-        from collections import Counter
-        c = Counter()
-        for s, ts_list in gt_by_source.items():
-            for ts in ts_list:
-                c[ts] += 1
-        system_gt_ts = {ts for ts, n in c.items() if n >= 2}
     plot_enabled_effective = bool(plot_cfg.get("enable")) and (not args.no_plot)
+
+    predictive_plot_ctx = _predictive_live_plot_context(
+        config_path=args.config,
+        sources=sources,
+        stream_factory=_make_stream,
+    )
+
+    live_value_y_lims: Dict[str, Tuple[float, float]] = {}
+    if plot_enabled_effective:
+        live_value_y_lims = _build_live_value_y_lims(
+            sources=sources,
+            model_sources=model_sources,
+            model_value_fields=model_value_fields,
+        )
 
     if plot_enabled_effective:
         show_warmup_span = bool(plot_cfg.get("show_warmup_span", True))
+        max_label_len = int(plot_cfg.get("max_label_len", 16) or 16)
+        raw_label_colors = plot_cfg.get("model_label_colors") or {}
+        if raw_label_colors is not None and not isinstance(raw_label_colors, dict):
+            raise ValueError("plot.model_label_colors must be a mapping if provided")
+        model_label_colors = {str(k): str(v) for k, v in dict(raw_label_colors).items()} if isinstance(raw_label_colors, dict) else {}
         rec_cfg = (plot_cfg.get("record") or {}) if isinstance(plot_cfg.get("record"), dict) else {}
         rec_enable = bool(rec_cfg.get("enable", False))
         rec_dir = rec_cfg.get("dir")
         rec_every = int(rec_cfg.get("every", 1) or 1)
         rec_dpi = int(rec_cfg.get("dpi", 140) or 140)
 
+    grouping_cfg = ((cfg.get("decision") or {}).get("grouping") or {})
+    raw_groups = grouping_cfg.get("groups") or {}
+    if raw_groups is not None and not isinstance(raw_groups, dict):
+        raise ValueError("decision.grouping.groups must be a mapping if provided")
+
+    model_group_membership: Dict[str, str] = {}
+    if isinstance(raw_groups, dict):
+        for gname, members in raw_groups.items():
+            if not isinstance(members, list):
+                continue
+            for m in members:
+                model_group_membership[str(m)] = str(gname)
+
+    if plot_enabled_effective:
         plot = LivePlot(
             window=int(plot_cfg.get("window", 300)),
             refresh_every=1,
+            value_y_lims=live_value_y_lims,
             plot_score_key="p",  # IMPORTANT: engine emits p; do NOT pass anomaly_probability here
+            max_label_len=max_label_len,
+            model_units=model_units,
+            model_label_colors=model_label_colors,
+            model_group_membership=model_group_membership,
             show_warmup_span=show_warmup_span,
             record_dir=str(rec_dir) if (rec_enable and rec_dir) else None,
             record_every=rec_every,
@@ -541,6 +747,13 @@ def main() -> None:
                 "raw", "p", "likelihood", "score",
                 "system_score", "alert",
                 "hot_by_model",
+                "window_hot_by_model",
+                "active_groups",
+                "window_hot_by_group",
+                "num_window_hot_groups",
+                "group_alert_eligible_now",
+                "group_consecutive_count",
+                "candidate_episode_len",
             ],
         )
         w.writeheader()
@@ -576,22 +789,44 @@ def main() -> None:
 
                     values_by_model[model_name] = per_feat
 
-                # Ground truth per model (derived from the model's source labels)
-                gt_by_model = None
-                if gt_by_source:
-                    gt_by_model = {
-                        model_name: set().union(*[gt_by_source[s] for s in srcs if s in gt_by_source])
-                        for model_name, srcs in model_sources.items()
-                    }
-                    gt_by_model = {m: g for m, g in gt_by_model.items() if g}
+                gt_by_model: Optional[Dict[str, float]] = None
+                gt_system_flag = False
+                if gt_by_source and ts_any is not None:
+                    gt_by_model = {}
+                    for model_name, srcs in model_sources.items():
+                        model_flag = any(
+                            _ts_in_event_windows(ts_any, gt_by_source.get(s))
+                            for s in srcs
+                        )
+                        gt_by_model[model_name] = 1.0 if model_flag else 0.0
+
+                    gt_sources_hot = sum(
+                        1
+                        for s in sources.keys()
+                        if _ts_in_event_windows(ts_any, gt_by_source.get(s))
+                    )
+                    gt_cfg = (cfg.get("ground_truth") or {}).get("system") or {}
+                    gt_k = int(gt_cfg.get("k", 2) or 2)
+                    gt_system_flag = gt_sources_hot >= gt_k
 
                 plot_row: Dict[str, Any] = {
                     "timestamp": _ts_any(rows_by_source),
                     "values_by_model": values_by_model,
                     "gt_by_model": gt_by_model,
-                    "gt_system": system_gt_ts,
+                    "gt_system": 1.0 if gt_system_flag else 0.0,
                     "in_warmup": bool(in_warmup),
                 }
+                # Predictive-warning context for live plot overlays
+                if predictive_plot_ctx.get("failure_t") is not None:
+                    plot_row["failure_t"] = int(predictive_plot_ctx["failure_t"])
+                if (
+                    predictive_plot_ctx.get("warning_start_t") is not None
+                    and predictive_plot_ctx.get("warning_end_t") is not None
+                ):
+                    plot_row["warning_window"] = {
+                        "start_t": int(predictive_plot_ctx["warning_start_t"]),
+                        "end_t": int(predictive_plot_ctx["warning_end_t"]),
+                    }
                 plot.update(t, plot_row, model_outputs, result)
                 if step_pause > 0:
                     time.sleep(step_pause)
@@ -599,7 +834,21 @@ def main() -> None:
             sys_score = result.get("system_score") if isinstance(result, dict) else None
             alert = result.get("alert") if isinstance(result, dict) else None
             hot_by_model = result.get("hot_by_model") if isinstance(result, dict) else None
+            window_hot_by_model = result.get("window_hot_by_model") if isinstance(result, dict) else None
+            window_hot_by_group = result.get("window_hot_by_group") if isinstance(result, dict) else None
+            num_window_hot_groups = result.get("num_window_hot_groups") if isinstance(result, dict) else None
+            group_alert_eligible_now = result.get("group_alert_eligible_now") if isinstance(result, dict) else None
+            group_consecutive_count = result.get("group_consecutive_count") if isinstance(result, dict) else None
+
             hot_by_model_json = json.dumps(hot_by_model, sort_keys=True) if hot_by_model is not None else None
+            window_hot_by_model_json = (
+                json.dumps(window_hot_by_model, sort_keys=True)
+                if window_hot_by_model is not None else None
+            )
+            window_hot_by_group_json = (
+                json.dumps(window_hot_by_group, sort_keys=True)
+                if window_hot_by_group is not None else None
+            )
 
             # write one line per model output
             score_key = decision_score_key_engine
@@ -619,6 +868,13 @@ def main() -> None:
                         "score": score_val,
                         "alert": alert,
                         "hot_by_model": hot_by_model_json,
+                        "window_hot_by_model": window_hot_by_model_json,
+                        "active_groups": json.dumps(result.get("active_groups", [])),
+                        "window_hot_by_group": window_hot_by_group_json,
+                        "num_window_hot_groups": num_window_hot_groups,
+                        "group_alert_eligible_now": group_alert_eligible_now,
+                        "group_consecutive_count": group_consecutive_count,
+                        "candidate_episode_len": result.get("candidate_episode_len", 0),
                     }
                 )
 
@@ -636,6 +892,11 @@ def main() -> None:
     # close diag handles
     for h in diag_handles.values():
         h.close()
+
+    if plot is not None and run_paths.analysis_dir is not None:
+        final_plot_path = run_paths.analysis_dir / "live_plot_final.png"
+        plot.save_snapshot(str(final_plot_path))
+        print(f"[run] wrote -> {final_plot_path}")
 
     print(f"[run] wrote -> {outp}")
     # Write companion manifest JSON next to the CSV for downstream analyze_run / README snapshots.
