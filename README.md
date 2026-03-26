@@ -1,38 +1,40 @@
 # HTM-Monitor
 
-System anomalies fire only when multiple grouped models agree **and** remain anomalous over time.
+System anomalies fire only when grouped signals agree and persist.
 
-## Demo
-
-### May 2020 System Anomaly
-https://github.com/user-attachments/assets/https://github.com/gotham29/htm-monitor/blob/master/assets/powergrid_ca_may2020.mp4
-
----
-
-### Aug 2020 System Anomaly
-https://github.com/user-attachments/assets/https://github.com/gotham29/htm-monitor/blob/master/assets/powergrid_ca_aug2020.mp4
-
----
-
-### Sept 2022 System Anomaly
-https://github.com/user-attachments/assets/https://github.com/gotham29/htm-monitor/blob/master/assets/powergrid_ca_sept2022.mp4
-
----
-
-## Problem
-Real-time anomaly detection produces too many false positives to be actionable.
-
-## Approach
+## Method
 - one HTM model per signal
 - related signals grouped together
-- system anomaly requires **agreement + persistence**
+- system anomaly requires group **agreement + persistence**
 
-## Results
+## Use Cases
 
+### CA Power Grid (2020-22)
+
+#### Labeled Anomalies
+- Outage Aug 2020
+- Outage Sept 2022
+
+#### Scores
 - **Precision:** 0.67  
 - **Recall:** 1.00  
 
 The single false positive coincides with a large-scale demand and generation shift during early COVID-19.
+
+#### Plots
+
+##### May 2020 System Anomaly
+![May 2020 System Anomaly](assets/powergrid_ca_may2020.gif)
+
+---
+##### Aug 2020 System Anomaly
+![Aug 2020 System Anomaly](assets/powergrid_ca_aug2020.gif)
+
+---
+##### Sept 2022 System Anomaly
+![Sept 2022 System Anomaly](assets/powergrid_ca_sept2022.gif)
+
+---
 
 ## Quickstart
 
@@ -55,7 +57,4 @@ python -m htm_monitor.cli.analyze_run \
   --config configs/generated/powergrid_ca.yaml
 ```
 
-## Why it matters
-
-Agreement + persistence turns anomaly detection from noisy output into actionable system alerts.
 
