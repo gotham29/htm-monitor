@@ -1,206 +1,81 @@
 # HTM-Monitor
 
-+Real-time multi-signal anomaly detection for streaming time series using **Hierarchical Temporal Memory (HTM)**.
+**signals → models → groups → temporal filter → system anomaly**
 
-![Live demo](assets/demo_synth.gif)
+Detects only **3 system anomalies across years of continuous grid data**
 
-Signals stream in → HTM learns online → anomaly probability rises → **system alert** triggers.
+## Problem
+Real-time anomaly detection produces too many false positives to be actionable.
 
-*Example: three signals monitored simultaneously with overlapping anomaly events.*
+In continuous, multi-signal systems, transient spikes frequently trigger alerts that do not correspond to meaningful events.
 
-Each run writes reproducible artifacts (`run.csv`, `run.manifest.json`, evaluation summaries`) for inspection and sharing.
+## Approach
+HTM-Monitor uses **sustained consensus across grouped models**:
 
----
+- Each signal is modeled independently (HTM)
+- Related signals are grouped (e.g., imbalance signals)
+- A system anomaly is triggered only when:
+  - multiple models are anomalous **at the same time**, and  
+  - the condition **persists over time**
 
-## Live demo (streaming detection)
+This suppresses isolated spikes and requires **coherent, sustained system behavior**.
 
-**Legend**
-- **value(s)** — incoming signal values
-- **HTM raw anomaly score** — raw HTM anomaly signal
-- **HTM anomaly probability** — interpretable score (0..1)
-- **pink spans** — model considered “hot”
-- **purple dotted lines** — ground-truth anomaly timestamps
-- **system alert** — final decision combining models
+> **System anomalies are triggered only when multiple models agree and remain anomalous over time.**
 
----
+## Demo
 
-## System evaluation
+### May 2020 System Anomaly
+Coordinated deviation across imbalance signals produces sustained anomaly scores and triggers a system anomaly.
 
-This example run is scored against known ground-truth anomaly timestamps.
-
-![System eval scorecard](assets/system_eval_scorecard.png)
-
-Static overview of the same run:
-
-![Run overview](assets/run_overview.png)
-
-Each run produces a self-contained directory:
-
-```
-outputs/<usecase>/<run_id>/
-  run.csv
-  run.manifest.json
-  analysis/
-    run_summary.json
-    run_summary.md
-```
-
-Runs are therefore:
-- reproducible
-- easy to diff
-- easy to share (just send the run folder)
+<video src="assets/Grid_Alert_May2020_final.mp4" controls width="700"></video>
 
 ---
 
-## Quickstart (synthetic demo)
+### Aug 2020 System Anomaly
+Similar signal behavior occurs, but without sustained consensus across models, no system anomaly is triggered.
 
-### 1) Install
+<video src="assets/Grid_Alert_Aug2020_final.mp4" controls width="700"></video>
+
+---
+
+### Sept 2022 System Anomaly
+A later event again shows coordinated, sustained deviation across signals, resulting in a system anomaly.
+
+<video src="assets/Grid_Alert_Sept2022_final.mp4" controls width="700"></video>
+
+## Results
+
+- **Precision:** 0.67  
+- **Recall:** 1.00  
+
+Across years of continuous data, only a small number of system anomalies are detected, while transient spikes are ignored.
+
+The single false positive coincides with a large-scale demand and generation shift during early COVID-19, suggesting sensitivity to real structural changes in the grid.
+
+## Quickstart
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 2) Run one command
-
-```bash
-python quickstart.py --usecase demo_synth --mode synth --run-id run_001 --make-gif
-```
-
-This will:
-1. generate synthetic signals with injected anomalies
-2. build a demo config
-3. run the pipeline
-4. analyze results
-5. optionally write `assets/demo_synth.gif`
-
-Outputs you’ll care about:
-- `assets/demo_synth.gif` *(README asset)*
-- `assets/system_eval_scorecard.png` *(README asset)*
-- `assets/run_overview.png` *(README asset)*
-
----
-
-## Real data example: NAB (exchange-4 CPC/CPM)
-
-This walkthrough runs HTM-Monitor on two real time series from the Numenta Anomaly Benchmark (NAB):
-`exchange-4_cpc_results.csv` and `exchange-4_cpm_results.csv`.
-
-Note: the NAB dataset is typically kept **outside** the repo. The generated config will reference your local CSV paths.
-
-### 1) Generate the usecase config (interactive wizard)
-
-This writes:
-- `specs/nab_exchange4.build.yaml` *(reproducible “build spec”)*
-- `configs/nab_exchange4.yaml` *(runnable config)*
-
-```bash
+# 1. Generate a usecase config
 python -m htm_monitor.cli.usecase_wizard \
-  --spec-out specs/nab_exchange4.build.yaml \
-  --out-dir configs
-```
+  --out-dir configs/generated \
+  --spec-out specs/powergrid_ca.build.yaml
 
-### 2) Run the pipeline
-
-`--out` is a **file path** for `run.csv` (not a directory). The manifest is written next to it automatically.
-
-```bash
+# 2. Run pipeline (no plot)
 python -m htm_monitor.cli.run_pipeline \
-  --config configs/nab_exchange4.yaml \
   --defaults configs/htm_defaults.yaml \
-  --out outputs/nab_exchange4/run.csv
-```
+  --config configs/generated/powergrid_ca.yaml \
+  --run-dir outputs/powergrid_ca_run \
+  --no-plot
 
-### 3) Analyze the run
-
-`analyze_run` requires the config (for ground truth + decision semantics).
-
-```bash
+# 3. Analyze results
 python -m htm_monitor.cli.analyze_run \
-  --run-dir outputs/nab_exchange4 \
-  --config configs/nab_exchange4.yaml
+  --run-dir outputs/powergrid_ca_run \
+  --config configs/generated/powergrid_ca.yaml
 ```
 
-Outputs are written to:
-`outputs/nab_exchange4/analysis/run_summary.{json,md}`
+## Why it matters
 
----
+Reducing false positives transforms anomaly detection from a noisy signal into an actionable system.
 
-## Bring your own dataset
+Requiring **agreement + persistence** produces alerts that reflect meaningful system-level behavior rather than isolated noise.
 
-HTM-Monitor expects each source CSV to have:
-
-```csv
-timestamp,value
-2015-03-01 00:00:00,123.4
-2015-03-01 00:30:00,121.9
-...
-```
-
-### Wizard mode (recommended for first-time real data)
-
-```bash
-python quickstart.py --mode wizard --usecase my_dataset --run-id run_001
-```
-
-Wizard mode writes:
-- `configs/my_dataset.build.yaml` (build spec: sources + knobs)
-- `configs/my_dataset.yaml` (the runnable config)
-
-Then it runs:
-- `src.htm_monitor.cli.run_pipeline`
-- `src.htm_monitor.cli.analyze_run`
-
----
-
-## How “system alerts” are computed
-
-The system separates:
-- **Engine** — produces per-model anomaly probabilities
-- **Decision** — converts those into:
-  - per-model “hot” status
-  - a final **system alert**
-
-In the demo config we use a *k-of-n window* decision:
-- a model becomes hot if its probability exceeds a threshold enough times
-- system alert triggers if at least **k** models are hot within a sliding window
-
-This gives you:
-- robustness to single-sensor noise
-- a clean “system is abnormal now” signal
-
----
-
-## Repository layout
-
-```
-src/htm_monitor/
-  cli/             # run_pipeline, analyze_run, wizard/build tools
-  htm_src/         # HTM components (encoding, TM/SP integration, anomaly likelihood)
-  orchestration/   # engine + decision logic
-  viz/             # live plotting
-  diagnostics/     # diagnostics CSVs + health checks
-```
-
----
-
-## FAQ
-
-### Can I run without the live plot?
-Yes:
-
-```bash
-python quickstart.py --usecase demo_synth --run-id run_001 --no-plot
-```
-
-You’ll still get:
-- `outputs/.../analysis/run_summary.md`
-- `outputs/.../analysis/system_eval_scorecard.png`
-- `outputs/.../analysis/run_overview.png`
-
----
-
-## License
-
-(add your license here)
