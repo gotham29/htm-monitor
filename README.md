@@ -5,17 +5,17 @@ System anomalies fire only when multiple grouped models agree **and** remain ano
 ## Demo
 
 ### May 2020 System Anomaly
-<video src="https://github.com/gotham29/htm-monitor/blob/master/assets/powergrid_ca_may2020.mp4" controls width="900"></video>
+https://github.com/user-attachments/assets/https://github.com/gotham29/htm-monitor/blob/master/assets/powergrid_ca_may2020.mp4
 
 ---
 
 ### Aug 2020 System Anomaly
-<video src="https://github.com/gotham29/htm-monitor/blob/master/assets/powergrid_ca_aug2020.mp4" controls width="900"></video>
+https://github.com/user-attachments/assets/https://github.com/gotham29/htm-monitor/blob/master/assets/powergrid_ca_aug2020.mp4
 
 ---
 
 ### Sept 2022 System Anomaly
-<video src="https://github.com/gotham29/htm-monitor/blob/master/assets/powergrid_ca_sept2022.mp4" controls width="900"></video>
+https://github.com/user-attachments/assets/https://github.com/gotham29/htm-monitor/blob/master/assets/powergrid_ca_sept2022.mp4
 
 ---
 

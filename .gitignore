@@ -28,3 +28,5 @@ configs/*.yaml
 !configs/demo_synth.yaml
 !configs/htm_defaults.yaml
 
+# assets powergrid
+assets/powergrid_ca_*.mp4
