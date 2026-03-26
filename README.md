@@ -1,56 +1,38 @@
 # HTM-Monitor
 
-**signals → models → groups → temporal filter → system anomaly**
-
-Detects only **3 system anomalies across years of continuous grid data**
-
-## Problem
-Real-time anomaly detection produces too many false positives to be actionable.
-
-In continuous, multi-signal systems, transient spikes frequently trigger alerts that do not correspond to meaningful events.
-
-## Approach
-HTM-Monitor uses **sustained consensus across grouped models**:
-
-- Each signal is modeled independently (HTM)
-- Related signals are grouped (e.g., imbalance signals)
-- A system anomaly is triggered only when:
-  - multiple models are anomalous **at the same time**, and  
-  - the condition **persists over time**
-
-This suppresses isolated spikes and requires **coherent, sustained system behavior**.
-
-> **System anomalies are triggered only when multiple models agree and remain anomalous over time.**
+System anomalies fire only when multiple grouped models agree **and** remain anomalous over time.
 
 ## Demo
 
 ### May 2020 System Anomaly
-Coordinated deviation across imbalance signals produces sustained anomaly scores and triggers a system anomaly.
-
-<video src="assets/Grid_Alert_May2020_final.mp4" controls width="700"></video>
+[Watch video](assets/powergrid_ca_may2020.mp4)
 
 ---
 
 ### Aug 2020 System Anomaly
-Similar signal behavior occurs, but without sustained consensus across models, no system anomaly is triggered.
-
-<video src="assets/Grid_Alert_Aug2020_final.mp4" controls width="700"></video>
++[Watch video](assets/powergrid_ca_aug2020.mp4)
 
 ---
 
 ### Sept 2022 System Anomaly
-A later event again shows coordinated, sustained deviation across signals, resulting in a system anomaly.
++[Watch video](assets/powergrid_ca_sept2022.mp4)
 
-<video src="assets/Grid_Alert_Sept2022_final.mp4" controls width="700"></video>
+---
+
+## Problem
+Real-time anomaly detection produces too many false positives to be actionable.
+
+## Approach
+- one HTM model per signal
+- related signals grouped together
+- system anomaly requires **agreement + persistence**
 
 ## Results
 
 - **Precision:** 0.67  
 - **Recall:** 1.00  
 
-Across years of continuous data, only a small number of system anomalies are detected, while transient spikes are ignored.
-
-The single false positive coincides with a large-scale demand and generation shift during early COVID-19, suggesting sensitivity to real structural changes in the grid.
+The single false positive coincides with a large-scale demand and generation shift during early COVID-19.
 
 ## Quickstart
 
@@ -75,7 +57,5 @@ python -m htm_monitor.cli.analyze_run \
 
 ## Why it matters
 
-Reducing false positives transforms anomaly detection from a noisy signal into an actionable system.
-
-Requiring **agreement + persistence** produces alerts that reflect meaningful system-level behavior rather than isolated noise.
+Agreement + persistence turns anomaly detection from noisy output into actionable system alerts.
 
