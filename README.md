@@ -12,16 +12,14 @@ System anomalies fire only when grouped signals agree and persist.
 ### CA Power Grid (2020-22)
 
 #### Labeled Anomalies
-- Outage Aug 2020
-- Outage Sept 2022
+- Outage Aug 14-16, 2020
+- Outage Sept 6-9, 2022
 
 #### Scores
 - **Precision:** 0.67  
 - **Recall:** 1.00  
 
 The single false positive coincides with a large-scale demand and generation shift during early COVID-19.
-
-#### Plots
 
 ##### May 2020 System Anomaly
 ![May 2020 System Anomaly](assets/powergrid_ca_may2020.gif)
@@ -33,6 +31,23 @@ The single false positive coincides with a large-scale demand and generation shi
 ---
 ##### Sept 2022 System Anomaly
 ![Sept 2022 System Anomaly](assets/powergrid_ca_sept2022.gif)
+
+---
+
+### SWaT Water Treatment (yy-yy)
+
+Industrial control system with coordinated cyber-physical attacks.
+
+#### Status
+in progress
+
+##### -- Attack Example
+
+---
+##### -- Attack Example
+
+---
+##### -- Attack Example
 
 ---
 

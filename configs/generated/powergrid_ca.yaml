@@ -95,6 +95,9 @@ data:
       - name: outage_sept2022
         start: '2022-09-06 00:00:00'
         end: '2022-09-09 00:00:00'
+      - name: covid_may2020
+        start: '2020-05-25 00:00:00'
+        end: '2020-05-30 00:00:00'
   - name: net_generation
     kind: csv
     path: /Users/samheiserman/Desktop/repos/htm-monitor/data/powergrid_ca/caiso_2019fit_2020_2022_pad0p00/net_generation.csv
@@ -111,6 +114,9 @@ data:
       - name: outage_sept2022
         start: '2022-09-06 00:00:00'
         end: '2022-09-09 00:00:00'
+      - name: covid_may2020
+        start: '2020-05-25 00:00:00'
+        end: '2020-05-30 00:00:00'
   - name: imbalance
     kind: csv
     path: /Users/samheiserman/Desktop/repos/htm-monitor/data/powergrid_ca/caiso_2019fit_2020_2022_pad0p00/imbalance.csv
@@ -127,6 +133,9 @@ data:
       - name: outage_sept2022
         start: '2022-09-06 00:00:00'
         end: '2022-09-09 00:00:00'
+      - name: covid_may2020
+        start: '2020-05-25 00:00:00'
+        end: '2020-05-30 00:00:00'
   - name: imbalance_delta
     kind: csv
     path: /Users/samheiserman/Desktop/repos/htm-monitor/data/powergrid_ca/caiso_2019fit_2020_2022_pad0p00/imbalance_delta.csv
@@ -143,6 +152,9 @@ data:
       - name: outage_sept2022
         start: '2022-09-06 00:00:00'
         end: '2022-09-09 00:00:00'
+      - name: covid_may2020
+        start: '2020-05-25 00:00:00'
+        end: '2020-05-30 00:00:00'
   - name: imbalance_residual
     kind: csv
     path: /Users/samheiserman/Desktop/repos/htm-monitor/data/powergrid_ca/caiso_2019fit_2020_2022_pad0p00/imbalance_residual.csv
@@ -159,6 +171,9 @@ data:
       - name: outage_sept2022
         start: '2022-09-06 00:00:00'
         end: '2022-09-09 00:00:00'
+      - name: covid_may2020
+        start: '2020-05-25 00:00:00'
+        end: '2020-05-30 00:00:00'
 run:
   warmup_steps: 1000
   learn_after_warmup: true
@@ -174,7 +189,7 @@ decision:
     enabled: true
     k: 2
     min_consecutive_group_steps: 2
-    min_alert_len: 6
+    min_alert_len: 4
     groups:
       gr_demand:
       - demand_model

@@ -285,7 +285,7 @@ def run_interactive() -> UsecaseBuildSpec:
 
         grouping_k = _prompt_int("decision.grouping.k", min(2, len(grouping_groups)))
         grouping_min_consecutive_group_steps = _prompt_int("decision.grouping.min_consecutive_group_steps", 2)
-        grouping_min_alert_len = _prompt_int("decision.grouping.min_alert_len", 6)
+        grouping_min_alert_len = _prompt_int("decision.grouping.min_alert_len", 4)
 
     print("\n--- Plot / live-view label settings ---")
     plot_max_label_len = _prompt_int("plot.max_label_len", 16)
