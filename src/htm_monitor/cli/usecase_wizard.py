@@ -228,13 +228,12 @@ def run_interactive() -> UsecaseBuildSpec:
     rdse_num_buckets = _prompt_int("rdse_num_buckets", 130)
     seed_base = _prompt_int("seed_base", 42)
 
-    print("\n--- Decision ---")
-    decision_method = _prompt("decision.method", "kofn_window")
-    decision_k = _prompt_int("decision.k", 2)
-    decision_window_size = _prompt_int("decision.window.size", 12)
-    decision_per_model_hits = _prompt_int("decision.window.per_model_hits", 5)
+    print("\n--- Decision core ---")
+    decision_method = _prompt("decision.method", "grouped_consensus")
+
     decision_threshold = _prompt_float("decision.threshold", 0.99)
-    decision_score_key = _prompt("decision.score_key", "anomaly_probability")
+    decision_score_key = _prompt("decision.score_key", "p")
+    decision_model_warmth_window_size = _prompt_int("decision.model_warmth.window_size", 8)
 
     print("\n--- Timebase / ingestion ---")
     timebase_mode = _prompt_choice("data.timebase.mode (union|intersection)", ["union", "intersection"], "union")
@@ -251,41 +250,54 @@ def run_interactive() -> UsecaseBuildSpec:
         == "true"
     )
 
-    print("\n--- Decision grouping (online alert contract) ---")
+    print("\n--- Decision groups ---")
     print(f"Available models: {', '.join(model_names)}")
-    grouping_enabled = (
-        _prompt_choice(
-            "decision.grouping.enabled (true|false)",
-            ["true", "false"],
-            "true" if len(model_names) > 1 else "false",
-        ) == "true"
-    )
+    decision_groups: Dict[str, Dict[str, Any]] = {}
+    num_groups = _prompt_int("decision.groups.num_groups", len(model_names))
+    for i in range(num_groups):
+        gname = _prompt(f"group {i+1} name", f"group_{i+1}").strip()
+        if not gname:
+            raise ValueError("Group name cannot be empty")
+        members_raw = _prompt(
+            f"models in {gname} (comma-separated)",
+            ",".join([model_names[min(i, len(model_names) - 1)]]),
+        )
+        members = _parse_csv_list(members_raw)
+        if not members:
+            raise ValueError(f"Group '{gname}' must contain at least one model")
+        unknown = [m for m in members if m not in model_names]
+        if unknown:
+            raise ValueError(f"Unknown model(s) in group '{gname}': {unknown}")
 
-    grouping_groups: Dict[str, List[str]] = {}
-    grouping_k: Optional[int] = None
-    grouping_min_consecutive_group_steps = 1
-    grouping_min_alert_len = 1
-    if grouping_enabled:
-        num_groups = _prompt_int("decision.grouping.num_groups", len(model_names))
-        for i in range(num_groups):
-            gname = _prompt(f"group {i+1} name", f"group_{i+1}").strip()
-            if not gname:
-                raise ValueError("Group name cannot be empty")
-            members_raw = _prompt(
-                f"models in {gname} (comma-separated)",
-                ",".join([model_names[min(i, len(model_names) - 1)]]),
+        default_min_instant = 1 if len(members) == 1 else min(2, len(members))
+        min_instant_members = _prompt_int(
+            f"{gname}.min_instant_members",
+            default_min_instant,
+        )
+        if min_instant_members <= 0:
+            raise ValueError(f"{gname}.min_instant_members must be > 0")
+        if min_instant_members > len(members):
+            raise ValueError(
+                f"{gname}.min_instant_members={min_instant_members} "
+                f"cannot exceed group size={len(members)}"
             )
-            members = _parse_csv_list(members_raw)
-            if not members:
-                raise ValueError(f"Group '{gname}' must contain at least one model")
-            unknown = [m for m in members if m not in model_names]
-            if unknown:
-                raise ValueError(f"Unknown model(s) in group '{gname}': {unknown}")
-            grouping_groups[gname] = members
 
-        grouping_k = _prompt_int("decision.grouping.k", min(2, len(grouping_groups)))
-        grouping_min_consecutive_group_steps = _prompt_int("decision.grouping.min_consecutive_group_steps", 2)
-        grouping_min_alert_len = _prompt_int("decision.grouping.min_alert_len", 4)
+        default_min_group_warmth = 0.50 if len(members) == 1 else 0.45
+        min_group_warmth = _prompt_float(
+            f"{gname}.min_group_warmth",
+            default_min_group_warmth,
+        )
+        if not (0.0 <= float(min_group_warmth) <= 1.0):
+            raise ValueError(f"{gname}.min_group_warmth must be in [0,1]")
+
+        decision_groups[gname] = {
+            "members": members,
+            "min_instant_members": int(min_instant_members),
+            "min_group_warmth": float(min_group_warmth),
+        }
+
+    decision_system_group_k = _prompt_int("decision.system.group_k", min(2, len(decision_groups)))
+    decision_system_min_system_len = _prompt_int("decision.system.min_system_len", 3)
 
     print("\n--- Plot / live-view label settings ---")
     plot_max_label_len = _prompt_int("plot.max_label_len", 16)
@@ -299,9 +311,9 @@ def run_interactive() -> UsecaseBuildSpec:
     if plot_label_color_mode == "explicit":
         palette = _default_group_palette()
         plot_model_label_colors = {}
-        if grouping_enabled and grouping_groups:
+        if decision_groups:
             print("Assign colors for each decision group label.")
-            for i, gname in enumerate(grouping_groups.keys()):
+            for i, gname in enumerate(decision_groups.keys()):
                 default_color = palette[i % len(palette)]
                 chosen = _prompt(f"color for group '{gname}'", default_color).strip() or default_color
                 plot_model_label_colors[str(gname)] = str(chosen)
@@ -325,17 +337,13 @@ def run_interactive() -> UsecaseBuildSpec:
         timebase_mode=timebase_mode,
         on_missing=on_missing,
         decision_method=decision_method,
-        decision_k=decision_k,
-        decision_window_size=decision_window_size,
-        decision_per_model_hits=decision_per_model_hits,
         decision_threshold=decision_threshold,
         decision_score_key=decision_score_key,
+        decision_model_warmth_window_size=decision_model_warmth_window_size,
+        decision_system_group_k=decision_system_group_k,
+        decision_system_min_system_len=decision_system_min_system_len,
+        decision_groups=decision_groups,
         run_warmup_steps=run_warmup_steps,
-        decision_grouping_enabled=grouping_enabled,
-        decision_grouping_k=grouping_k,
-        decision_grouping_min_consecutive_group_steps=grouping_min_consecutive_group_steps,
-        decision_grouping_min_alert_len=grouping_min_alert_len,
-        decision_grouping_groups=grouping_groups if grouping_enabled else None,
         run_learn_after_warmup=run_learn_after_warmup,
         plot_max_label_len=plot_max_label_len,
         plot_label_color_mode=plot_label_color_mode,
@@ -352,6 +360,12 @@ def run_interactive() -> UsecaseBuildSpec:
         min_floor=min_floor,
     )
     overrides: Dict[str, Any] = dict(features=overrides_features)
+
+    # Ground-truth event windows live inside serialized sources as:
+    #   labels.event_windows = [
+    #     {"name": "...", "kind": "primary_gt|explanatory", "start": "...", "end": "..."},
+    #     ...
+    #   ]
 
     return UsecaseBuildSpec(
         usecase=usecase,

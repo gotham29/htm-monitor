@@ -21,9 +21,9 @@ log = logging.getLogger("analyze_run")
 # Small utilities
 # -------------------------
 
-def parse_hot(x: Any) -> Dict[str, Any]:
+def parse_json_dict(x: Any) -> Dict[str, Any]:
     """
-    hot_by_model is serialized as JSON dict in run.csv.
+    JSON dict serialized in run.csv.
     Anything else -> {}.
     """
     if isinstance(x, dict):
@@ -33,15 +33,14 @@ def parse_hot(x: Any) -> Dict[str, Any]:
     if isinstance(x, str) and x.strip():
         v = json.loads(x)
         if not isinstance(v, dict):
-            raise ValueError("hot_by_model must decode to a JSON object")
+            raise ValueError("Expected JSON object")
         return v
     return {}
 
 
-def parse_str_list(x: Any) -> List[str]:
+def parse_json_list(x: Any) -> List[str]:
     """
-    Accept JSON list, python list, comma-separated string, or blank -> [].
-    Used for grouped-decision fields serialized into run.csv.
+    Accept JSON list, python list, or blank -> [].
     """
     if isinstance(x, list):
         return [str(v) for v in x if str(v).strip()]
@@ -171,23 +170,18 @@ def load_run(csv_path: str) -> pd.DataFrame:
 
     df["ts"] = pd.to_datetime(df["timestamp"], errors="coerce")
     df["alert"] = _safe_bool_series(df["alert"])
-    df["hot_dict"] = df.get("hot_by_model", "").apply(parse_hot)
 
-    # Optional grouped-decision diagnostics emitted by run_pipeline.
-    if "group_hot_by_model" in df.columns:
-        df["group_hot_dict"] = df["group_hot_by_model"].apply(parse_hot)
-    else:
-        df["group_hot_dict"] = [{} for _ in range(len(df))]
+    df["instant_hot_dict"] = df.get("instant_hot_by_model", pd.Series(["{}"] * len(df))).apply(parse_json_dict)
+    df["model_warmth_dict"] = df.get("model_warmth_by_model", pd.Series(["{}"] * len(df))).apply(parse_json_dict)
+    df["group_instant_count_dict"] = df.get("group_instant_count", pd.Series(["{}"] * len(df))).apply(parse_json_dict)
+    df["group_warmth_dict"] = df.get("group_warmth", pd.Series(["{}"] * len(df))).apply(parse_json_dict)
+    df["group_hot_dict"] = df.get("group_hot", pd.Series(["{}"] * len(df))).apply(parse_json_dict)
 
-    if "window_hot_by_group" in df.columns:
-        df["window_hot_group_dict"] = df["window_hot_by_group"].apply(parse_hot)
-    else:
-        df["window_hot_group_dict"] = [{} for _ in range(len(df))]
-
-    if "active_groups" in df.columns:
-        df["active_groups_list"] = df["active_groups"].apply(parse_str_list)
-    else:
-        df["active_groups_list"] = [[] for _ in range(len(df))]
+    df["active_groups_list"] = [
+        sorted(str(k) for k, v in d.items() if bool(v))
+        if isinstance(d, dict) else []
+        for d in df["group_hot_dict"].tolist()
+    ]
 
     # Optional warmup signal emitted by run_pipeline (preferred).
     if "in_warmup" in df.columns:
@@ -230,9 +224,10 @@ class DecisionParams:
     method: str
     score_key: str
     threshold: float
-    k: int
-    window_size: int
-    per_model_hits: int
+    warmth_window_size: int
+    group_k: int
+    min_system_len: int
+    groups: Dict[str, Dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -288,6 +283,7 @@ class PredictiveWarningEval:
 @dataclass(frozen=True)
 class GtWindow:
     name: Optional[str]
+    kind: str
     start_ts: str
     end_ts: str
 
@@ -476,27 +472,35 @@ def _load_decision_params(config_path: str) -> DecisionParams:
         raise ValueError("config.decision.threshold missing")
     threshold = float(thr)
 
-    k = decision.get("k")
-    if k is None or not isinstance(k, int) or k <= 0:
-        raise ValueError("config.decision.k must be an int > 0")
+    model_warmth = decision.get("model_warmth") or {}
+    if not isinstance(model_warmth, dict):
+        raise ValueError("config.decision.model_warmth must be a mapping")
+    warmth_window_size = int(model_warmth.get("window_size", 8))
+    if warmth_window_size <= 0:
+        raise ValueError("config.decision.model_warmth.window_size must be an int > 0")
 
-    win = decision.get("window")
-    if not isinstance(win, dict):
-        raise ValueError("config.decision.window must be a mapping")
-    size = win.get("size")
-    if size is None or not isinstance(size, int) or size <= 0:
-        raise ValueError("config.decision.window.size must be an int > 0")
-    per_model_hits = win.get("per_model_hits", 1)
-    if not isinstance(per_model_hits, int) or per_model_hits <= 0:
-        raise ValueError("config.decision.window.per_model_hits must be an int > 0")
+    system = decision.get("system") or {}
+    if not isinstance(system, dict):
+        raise ValueError("config.decision.system must be a mapping")
+    group_k = int(system.get("group_k", 1))
+    min_system_len = int(system.get("min_system_len", 1))
+    if group_k <= 0:
+        raise ValueError("config.decision.system.group_k must be an int > 0")
+    if min_system_len <= 0:
+        raise ValueError("config.decision.system.min_system_len must be an int > 0")
+
+    groups = decision.get("groups") or {}
+    if not isinstance(groups, dict) or not groups:
+        raise ValueError("config.decision.groups must be a non-empty mapping")
 
     return DecisionParams(
         method=method,
         score_key=score_key,
         threshold=threshold,
-        k=int(k),
-        window_size=int(size),
-        per_model_hits=int(per_model_hits),
+        warmth_window_size=int(warmth_window_size),
+        group_k=int(group_k),
+        min_system_len=int(min_system_len),
+        groups=dict(groups),
     )
 
 
@@ -526,7 +530,7 @@ def _load_system_gt_params(config_path: str, decision: DecisionParams) -> System
         sys_gt = {}
 
     method = str(sys_gt.get("method") or "kofn_window").strip() or "kofn_window"
-    k = sys_gt.get("k", decision.k)
+    k = sys_gt.get("k", decision.group_k)
     k = int(k)
     if k <= 0:
         raise ValueError("ground_truth.system.k must be > 0")
@@ -536,7 +540,7 @@ def _load_system_gt_params(config_path: str, decision: DecisionParams) -> System
         win = {}
     if not isinstance(win, dict):
         raise ValueError("ground_truth.system.window must be a mapping if provided")
-    window_size = int(win.get("size", decision.window_size))
+    window_size = int(win.get("size", decision.warmth_window_size))
     if window_size <= 0:
         raise ValueError("ground_truth.system.window.size must be an int > 0")
 
@@ -553,6 +557,7 @@ def _config_gt_windows_by_source(config_path: str) -> Dict[str, List[GtWindow]]:
     Canonical GT contract:
       data.sources[*].labels.event_windows:
         - name: aug2020
+          kind: primary_gt
           start: "2020-08-14 00:00:00"
           end:   "2020-08-15 23:00:00"
 
@@ -591,6 +596,12 @@ def _config_gt_windows_by_source(config_path: str) -> Dict[str, List[GtWindow]]:
                 start = ev.get("start")
                 end = ev.get("end")
                 ev_name = ev.get("name")
+                ev_kind = str(ev.get("kind") or "primary_gt").strip() or "primary_gt"
+                if ev_kind not in {"primary_gt", "explanatory"}:
+                    raise ValueError(
+                        f"config.data.sources[{name}].labels.event_windows[{i}].kind "
+                        "must be 'primary_gt' or 'explanatory'"
+                    )
                 if not isinstance(start, str) or not start.strip():
                     raise ValueError(
                         f"config.data.sources[{name}].labels.event_windows[{i}].start must be a non-empty string"
@@ -602,6 +613,7 @@ def _config_gt_windows_by_source(config_path: str) -> Dict[str, List[GtWindow]]:
                 wins.append(
                     GtWindow(
                         name=str(ev_name).strip() if isinstance(ev_name, str) and ev_name.strip() else None,
+                        kind=ev_kind,
                         start_ts=start.strip(),
                         end_ts=end.strip(),
                     )
@@ -617,7 +629,10 @@ def _config_gt_windows_by_source(config_path: str) -> Dict[str, List[GtWindow]]:
             vals = [x.strip() for x in ts_list if isinstance(x, str) and x.strip()]
             if vals:
                 # Legacy path: store as 1-timestep windows for now; later collapsed after ts->t mapping.
-                out[str(name)] = [GtWindow(name=None, start_ts=v, end_ts=v) for v in vals]
+                out[str(name)] = [
+                    GtWindow(name=None, kind="primary_gt", start_ts=v, end_ts=v)
+                    for v in vals
+                ]
     return out
 
 
@@ -654,6 +669,42 @@ def _merge_overlapping_windows(windows: List[Tuple[int, int]]) -> List[Tuple[int
         else:
             out.append((s, e))
     return out
+
+
+def _split_gt_windows_by_kind(
+    gt_by_source: Dict[str, List[GtWindow]]
+) -> Tuple[Dict[str, List[GtWindow]], Dict[str, List[GtWindow]]]:
+    primary: Dict[str, List[GtWindow]] = {}
+    explanatory: Dict[str, List[GtWindow]] = {}
+    for src, wins in (gt_by_source or {}).items():
+        for w in wins or []:
+            if str(w.kind) == "explanatory":
+                explanatory.setdefault(src, []).append(w)
+            else:
+                primary.setdefault(src, []).append(w)
+    return primary, explanatory
+
+
+def _episode_overlaps_any_window(
+    episode: Tuple[int, int],
+    windows: List[Tuple[int, int]],
+) -> bool:
+    es, ee = int(episode[0]), int(episode[1])
+    return any(not (int(ee) < int(ws) or int(es) > int(we)) for ws, we in windows)
+
+
+def _match_explanatory_episodes(
+    episodes: List[Tuple[int, int]],
+    explanatory_windows: List[Tuple[int, int]],
+) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    matched: List[Tuple[int, int]] = []
+    unmatched: List[Tuple[int, int]] = []
+    for ep in episodes:
+        if _episode_overlaps_any_window(ep, explanatory_windows):
+            matched.append((int(ep[0]), int(ep[1])))
+        else:
+            unmatched.append((int(ep[0]), int(ep[1])))
+    return matched, unmatched
 
 
 def _models_consuming_source(model_sources: Dict[str, List[str]], source: str) -> List[str]:
@@ -704,6 +755,52 @@ def _map_gt_strings_to_t(
             f"{missing[:10]}{' ...' if len(missing)>10 else ''}"
         )
     return sorted(set(out)), missing
+
+
+def _map_boundary_ts(
+    target_ts: str,
+    ts_to_t: Dict[str, int],
+    *,
+    is_start: bool,
+) -> Optional[int]:
+    """
+    Boundary-aware timestamp -> timestep mapping for interval labels.
+
+    Rules:
+      - if target_ts exists exactly in ts_to_t, use it
+      - start boundary: use first run timestamp >= target_ts
+      - end boundary:   use last run timestamp <= target_ts
+
+    Returns None if no valid boundary can be found.
+    """
+    if target_ts in ts_to_t:
+        return int(ts_to_t[target_ts])
+
+    if not ts_to_t:
+        return None
+
+    target_dt = pd.to_datetime(target_ts, errors="coerce")
+    if pd.isna(target_dt):
+        return None
+
+    pairs: List[Tuple[pd.Timestamp, int]] = []
+    for ts_str, t in ts_to_t.items():
+        dt = pd.to_datetime(ts_str, errors="coerce")
+        if pd.isna(dt):
+            continue
+        pairs.append((dt, int(t)))
+
+    if not pairs:
+        return None
+
+    pairs.sort(key=lambda x: x[0])
+
+    if is_start:
+        candidates = [t for dt, t in pairs if dt >= target_dt]
+        return int(candidates[0]) if candidates else None
+
+    candidates = [t for dt, t in pairs if dt <= target_dt]
+    return int(candidates[-1]) if candidates else None
 
 
 # -------------------------
@@ -1562,7 +1659,10 @@ def build_episode_details(
     *,
     score_col: str,
     step_minutes: Optional[float],
-    hot_dict_by_t: Dict[int, Dict[str, Any]],
+    instant_hot_dict_by_t: Dict[int, Dict[str, Any]],
+    model_warmth_dict_by_t: Dict[int, Dict[str, Any]],
+    group_instant_count_by_t: Dict[int, Dict[str, Any]],
+    group_warmth_dict_by_t: Dict[int, Dict[str, Any]],
     group_hot_dict_by_t: Optional[Dict[int, Dict[str, Any]]],
     active_groups_by_t: Optional[Dict[int, List[str]]],
     gt_windows: List[Tuple[int, int]],
@@ -1574,9 +1674,10 @@ def build_episode_details(
 
     For each episode we record:
       - duration / timestamps
-      - peak system score
+      - peak system-hot count / streak
       - GT overlap / GT match
-      - per-model hot participation within the episode
+      - per-model instant-hot participation within the episode
+      - per-model warmth summary within the episode
       - per-model max score within the episode
     """
     one_eval = one[one["t"].astype(int) >= int(min_eval_t)].copy()
@@ -1607,14 +1708,21 @@ def build_episode_details(
         length_steps = int(e) - int(s) + 1
         length_minutes = (float(length_steps) * float(step_minutes)) if step_minutes is not None else None
 
-        ep_sys_scores = pd.to_numeric(ep_one.get("system_score"), errors="coerce")
-        if ep_sys_scores.notna().any():
-            peak_idx = ep_sys_scores.idxmax()
-            peak_system_score = _safe_float(ep_sys_scores.loc[peak_idx])
+        ep_system_hot_count = pd.to_numeric(ep_one.get("system_hot_count"), errors="coerce")
+        if ep_system_hot_count.notna().any():
+            peak_idx = ep_system_hot_count.idxmax()
+            peak_system_hot_count = _safe_float(ep_system_hot_count.loc[peak_idx])
             peak_t = _safe_int(ep_one.loc[peak_idx, "t"])
         else:
-            peak_system_score = None
+            peak_system_hot_count = None
             peak_t = None
+
+        ep_system_hot_streak = pd.to_numeric(ep_one.get("system_hot_streak"), errors="coerce")
+        peak_system_hot_streak = (
+            _safe_float(ep_system_hot_streak.max())
+            if ep_system_hot_streak.notna().any()
+            else None
+        )
 
         gt_overlaps: List[Dict[str, int]] = []
         for gi, (gs, ge) in enumerate(sorted((int(gs), int(ge)) for gs, ge in gt_windows), start=1):
@@ -1628,20 +1736,34 @@ def build_episode_details(
                 )
 
         per_model: List[Dict[str, Any]] = []
-        active_union: List[str] = []
+        instant_active_union: List[str] = []
+        warm_active_union: List[str] = []
         per_group: List[Dict[str, Any]] = []
         active_group_union: List[str] = []
 
         for model_name in models_all:
-            hot_steps = 0
-            first_hot_t: Optional[int] = None
+            instant_hot_steps = 0
+            first_instant_hot_t: Optional[int] = None
+            warmth_vals: List[float] = []
             for t in t_vals:
-                d = hot_dict_by_t.get(int(t)) or {}
-                is_hot = bool(d.get(model_name)) if isinstance(d, dict) else False
+                d_inst = instant_hot_dict_by_t.get(int(t)) or {}
+                is_hot = bool(d_inst.get(model_name)) if isinstance(d_inst, dict) else False
                 if is_hot:
-                    hot_steps += 1
-                    if first_hot_t is None:
-                        first_hot_t = int(t)
+                    instant_hot_steps += 1
+                    if first_instant_hot_t is None:
+                        first_instant_hot_t = int(t)
+
+                d_warm = model_warmth_dict_by_t.get(int(t)) or {}
+                try:
+                    wv = (
+                        float(d_warm.get(model_name))
+                        if isinstance(d_warm, dict) and (model_name in d_warm)
+                        else None
+                    )
+                except Exception:
+                    wv = None
+                if wv is not None:
+                    warmth_vals.append(float(wv))
 
             model_sub = ep_df[ep_df["model"].astype(str) == str(model_name)].copy()
             max_score = None
@@ -1652,20 +1774,27 @@ def build_episode_details(
                     max_score = _safe_float(score_series.max())
                     mean_score = _safe_float(score_series.mean())
 
-            if hot_steps > 0:
-                active_union.append(str(model_name))
+            max_warmth = max(warmth_vals) if warmth_vals else None
+            mean_warmth = (sum(warmth_vals) / float(len(warmth_vals))) if warmth_vals else None
+
+            if instant_hot_steps > 0:
+                instant_active_union.append(str(model_name))
+            if max_warmth is not None and max_warmth > 0.0:
+                warm_active_union.append(str(model_name))
 
             per_model.append(
                 {
                     "model": str(model_name),
-                    "hot_steps": int(hot_steps),
-                    "hot_frac": float(hot_steps / length_steps) if length_steps > 0 else 0.0,
-                    "first_hot_t": int(first_hot_t) if first_hot_t is not None else None,
-                    "first_hot_ts": (
-                        str(t_to_ts.get(int(first_hot_t)))
-                        if first_hot_t is not None and t_to_ts.get(int(first_hot_t)) is not None
+                    "instant_hot_steps": int(instant_hot_steps),
+                    "instant_hot_frac": float(instant_hot_steps / length_steps) if length_steps > 0 else 0.0,
+                    "first_instant_hot_t": int(first_instant_hot_t) if first_instant_hot_t is not None else None,
+                    "first_instant_hot_ts": (
+                        str(t_to_ts.get(int(first_instant_hot_t)))
+                        if first_instant_hot_t is not None and t_to_ts.get(int(first_instant_hot_t)) is not None
                         else None
                     ),
+                    "max_warmth": float(max_warmth) if max_warmth is not None else None,
+                    "mean_warmth": float(mean_warmth) if mean_warmth is not None else None,
                     "max_score": max_score,
                     "mean_score": mean_score,
                 }
@@ -1674,7 +1803,8 @@ def build_episode_details(
         per_model = sorted(
             per_model,
             key=lambda x: (
-                -int(x["hot_steps"]),
+                -int(x["instant_hot_steps"]),
+                -(x["max_warmth"] if x["max_warmth"] is not None else -1.0),
                 -(x["max_score"] if x["max_score"] is not None else -1.0),
                 str(x["model"]),
             ),
@@ -1683,6 +1813,8 @@ def build_episode_details(
         for group_name in groups_all:
             group_hot_steps = 0
             first_group_hot_t: Optional[int] = None
+            group_instant_vals: List[float] = []
+            group_warmth_vals: List[float] = []
             for t in t_vals:
                 gd = (group_hot_dict_by_t or {}).get(int(t)) or {}
                 is_group_hot = bool(gd.get(group_name)) if isinstance(gd, dict) else False
@@ -1690,6 +1822,29 @@ def build_episode_details(
                     group_hot_steps += 1
                     if first_group_hot_t is None:
                         first_group_hot_t = int(t)
+                gi = (group_instant_count_by_t or {}).get(int(t)) or {}
+                try:
+                    gic = (
+                        float(gi.get(group_name))
+                        if isinstance(gi, dict) and (group_name in gi)
+                        else None
+                    )
+                except Exception:
+                    gic = None
+                if gic is not None:
+                    group_instant_vals.append(float(gic))
+
+                gw = (group_warmth_dict_by_t or {}).get(int(t)) or {}
+                try:
+                    gwv = (
+                        float(gw.get(group_name))
+                        if isinstance(gw, dict) and (group_name in gw)
+                        else None
+                    )
+                except Exception:
+                    gwv = None
+                if gwv is not None:
+                    group_warmth_vals.append(float(gwv))
 
             if group_hot_steps > 0:
                 active_group_union.append(str(group_name))
@@ -1699,6 +1854,16 @@ def build_episode_details(
                     "group": str(group_name),
                     "hot_steps": int(group_hot_steps),
                     "hot_frac": float(group_hot_steps / length_steps) if length_steps > 0 else 0.0,
+                    "max_instant_count": float(max(group_instant_vals)) if group_instant_vals else None,
+                    "mean_instant_count": (
+                        float(sum(group_instant_vals) / float(len(group_instant_vals)))
+                        if group_instant_vals else None
+                    ),
+                    "max_warmth": float(max(group_warmth_vals)) if group_warmth_vals else None,
+                    "mean_warmth": (
+                        float(sum(group_warmth_vals) / float(len(group_warmth_vals)))
+                        if group_warmth_vals else None
+                    ),
                     "first_hot_t": int(first_group_hot_t) if first_group_hot_t is not None else None,
                     "first_hot_ts": (
                         str(t_to_ts.get(int(first_group_hot_t)))
@@ -1719,18 +1884,21 @@ def build_episode_details(
                 "ts_end": str(t_to_ts.get(int(e))) if t_to_ts.get(int(e)) is not None else None,
                 "length_steps": int(length_steps),
                 "length_minutes": float(length_minutes) if length_minutes is not None else None,
-                "peak_system_score": peak_system_score,
+                "peak_system_hot_count": peak_system_hot_count,
+                "peak_system_hot_streak": peak_system_hot_streak,
                 "peak_t": int(peak_t) if peak_t is not None else None,
                 "peak_ts": str(t_to_ts.get(int(peak_t))) if peak_t is not None and t_to_ts.get(int(peak_t)) is not None else None,
                 "gt_matched": bool(len(matched_gt) > 0),
                 "matched_gt_windows": matched_gt,
                 "gt_overlap_count": int(len(gt_overlaps)),
                 "gt_overlaps": gt_overlaps,
-                "num_models_active": int(len(active_union)),
+                "num_models_instant_active": int(len(instant_active_union)),
+                "num_models_warm_active": int(len(warm_active_union)),
                 "num_groups_active": int(len(set(active_group_union))),
                 "active_groups_union": sorted(set(active_group_union)),
                 "groups": per_group,
-                "active_models_union": sorted(active_union),
+                "active_models_instant_union": sorted(instant_active_union),
+                "active_models_warm_union": sorted(warm_active_union),
                 "models": per_model,
             }
         )
@@ -1763,7 +1931,7 @@ def summarize_episode_takeaways(
             seen_in_episode: Set[str] = set()
             for m in ep.get("models") or []:
                 model = str(m.get("model"))
-                hot_steps = int(m.get("hot_steps") or 0)
+                hot_steps = int(m.get("instant_hot_steps") or 0)
                 if model not in by_model:
                     by_model[model] = {
                         "model": model,
@@ -1777,7 +1945,7 @@ def summarize_episode_takeaways(
                 by_model[model]["total_hot_steps"] += int(hot_steps)
                 by_model[model]["max_hot_frac"] = max(
                     float(by_model[model]["max_hot_frac"]),
-                    float(m.get("hot_frac") or 0.0),
+                    float(m.get("instant_hot_frac") or 0.0),
                 )
         vals = list(by_model.values())
         vals.sort(
@@ -1798,9 +1966,10 @@ def summarize_episode_takeaways(
         strongest_gt = sorted(
             gt_eps,
             key=lambda ep: (
-                -(ep.get("peak_system_score") if ep.get("peak_system_score") is not None else -1.0),
+                -(ep.get("peak_system_hot_count") if ep.get("peak_system_hot_count") is not None else -1.0),
+                -(ep.get("peak_system_hot_streak") if ep.get("peak_system_hot_streak") is not None else -1.0),
                 -int(ep.get("num_groups_active") or 0),
-                -int(ep.get("num_models_active") or 0),
+                -int(ep.get("num_models_instant_active") or 0),
                 -int(ep.get("length_steps") or 0),
             ),
         )[0]
@@ -1811,9 +1980,10 @@ def summarize_episode_takeaways(
             "ts_start": strongest_gt.get("ts_start"),
             "ts_end": strongest_gt.get("ts_end"),
             "length_steps": int(strongest_gt["length_steps"]),
-            "peak_system_score": strongest_gt.get("peak_system_score"),
+            "peak_system_hot_count": strongest_gt.get("peak_system_hot_count"),
+            "peak_system_hot_streak": strongest_gt.get("peak_system_hot_streak"),
             "active_groups_union": list(strongest_gt.get("active_groups_union") or []),
-            "active_models_union": list(strongest_gt.get("active_models_union") or []),
+            "active_models_instant_union": list(strongest_gt.get("active_models_instant_union") or []),
         }
 
     def _aggregate_groups(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1837,8 +2007,9 @@ def summarize_episode_takeaways(
         strongest_non_gt = sorted(
             non_gt_eps,
             key=lambda ep: (
-                -(ep.get("peak_system_score") if ep.get("peak_system_score") is not None else -1.0),
-                -int(ep.get("num_models_active") or 0),
+                -(ep.get("peak_system_hot_count") if ep.get("peak_system_hot_count") is not None else -1.0),
+                -(ep.get("peak_system_hot_streak") if ep.get("peak_system_hot_streak") is not None else -1.0),
+                -int(ep.get("num_models_instant_active") or 0),
                 -int(ep.get("length_steps") or 0),
             ),
         )[0]
@@ -1849,8 +2020,9 @@ def summarize_episode_takeaways(
             "ts_start": strongest_non_gt.get("ts_start"),
             "ts_end": strongest_non_gt.get("ts_end"),
             "length_steps": int(strongest_non_gt["length_steps"]),
-            "peak_system_score": strongest_non_gt.get("peak_system_score"),
-            "active_models_union": list(strongest_non_gt.get("active_models_union") or []),
+            "peak_system_hot_count": strongest_non_gt.get("peak_system_hot_count"),
+            "peak_system_hot_streak": strongest_non_gt.get("peak_system_hot_streak"),
+            "active_models_instant_union": list(strongest_non_gt.get("active_models_instant_union") or []),
         }
 
     return {
@@ -1908,10 +2080,10 @@ def build_model_hot_mask(
     t_index = sub["t"].astype(int).tolist()
 
     if prefer_hot_by_model:
-        # If hot_by_model is present, it is system-decision-consistent.
+        # If instant_hot_by_model is present, use it.
         # We treat missing keys as False.
         hot_mask: List[bool] = []
-        for d in sub["hot_dict"].tolist():
+        for d in sub["instant_hot_dict"].tolist():
             if isinstance(d, dict) and (model_name in d):
                 hot_mask.append(bool(d.get(model_name)))
             else:
@@ -1973,8 +2145,15 @@ def summarize(
     n_steps = int(len(one_eval))
     step_minutes = _infer_step_minutes(one_eval["ts"])
 
-    # hot_dict for “what fired” at system detection times
-    hot_dict_by_t: Dict[int, Dict[str, Any]] = dict(zip(one_eval["t"].astype(int).tolist(), one_eval["hot_dict"].tolist()))
+    instant_hot_dict_by_t: Dict[int, Dict[str, Any]] = dict(
+        zip(one_eval["t"].astype(int).tolist(), one_eval["instant_hot_dict"].tolist())
+    )
+    model_warmth_dict_by_t: Dict[int, Dict[str, Any]] = dict(
+        zip(one_eval["t"].astype(int).tolist(), one_eval["model_warmth_dict"].tolist())
+    )
+    group_instant_count_by_t: Dict[int, Dict[str, Any]] = dict(
+        zip(one_eval["t"].astype(int).tolist(), one_eval["group_instant_count_dict"].tolist())
+    )
 
     # Load contracts
     model_sources = _config_model_sources(config_path)
@@ -1983,9 +2162,12 @@ def summarize(
     evaluation_mode = _load_evaluation_mode(config_path)
     timebase = _load_timebase_params(config_path)
     sys_gt_params = _load_system_gt_params(config_path, decision)
-    gt_windows_cfg_by_source = _config_gt_windows_by_source(config_path)
+    gt_windows_cfg_by_source_all = _config_gt_windows_by_source(config_path)
+    gt_windows_cfg_by_source, explanatory_windows_cfg_by_source = _split_gt_windows_by_kind(
+        gt_windows_cfg_by_source_all
+    )
 
-    if not gt_windows_cfg_by_source and strict:
+    if not gt_windows_cfg_by_source_all and strict:
         raise ValueError("No GT labels found in config (strict mode). Provide data.sources[*].labels.event_windows.")
 
     # Alert episodes: runtime alert stream is canonical (no offline postprocess)
@@ -2150,7 +2332,7 @@ def summarize(
             sys_eps,
             contract=predictive_warning_contract,
             step_minutes=step_minutes,
-            hot_dict_by_t=hot_dict_by_t,
+                hot_dict_by_t=instant_hot_dict_by_t,
         )
         predictive_warning_summary = {
             "contract": {
@@ -2203,14 +2385,14 @@ def summarize(
                 sys_eps,
                 max_lag_steps=max_lag_steps,
                 step_minutes=step_minutes,
-                hot_dict_by_t=hot_dict_by_t,
+                hot_dict_by_t=instant_hot_dict_by_t,
             )
 
     group_hot_dict_by_t: Dict[int, Dict[str, Any]] = {
         int(t): (d if isinstance(d, dict) else {})
         for t, d in zip(
             one["t"].astype(int).tolist(),
-            one["window_hot_group_dict"].tolist(),
+            one["group_hot_dict"].tolist(),
         )
     }
     active_groups_by_t: Dict[int, List[str]] = {
@@ -2220,6 +2402,44 @@ def summarize(
             one["active_groups_list"].tolist(),
         )
     }
+    group_warmth_dict_by_t: Dict[int, Dict[str, Any]] = {
+        int(t): (d if isinstance(d, dict) else {})
+        for t, d in zip(one["t"].astype(int).tolist(), one["group_warmth_dict"].tolist())
+    }
+
+    explanatory_windows_t_by_source: Dict[str, List[Tuple[int, int]]] = {}
+    for src, wins in explanatory_windows_cfg_by_source.items():
+        models_for_src = _models_consuming_source(model_sources, src)
+        ts_to_t = _build_ts_to_t_for_models(df, models_for_src)
+        src_t_windows: List[Tuple[int, int]] = []
+        for w in wins:
+            s = _map_boundary_ts(
+                w.start_ts,
+                ts_to_t,
+                is_start=True,
+            )
+            e = _map_boundary_ts(
+                w.end_ts,
+                ts_to_t,
+                is_start=False,
+            )
+            if s is None or e is None:
+                 continue
+            s = int(s)
+            e = int(e)
+            if e < s:
+                raise ValueError(f"Explanatory window end before start for {src}:{w.name or 'window'}")
+            src_t_windows.append((s, e))
+        if src_t_windows:
+            explanatory_windows_t_by_source[src] = _merge_overlapping_windows(src_t_windows)
+
+    sys_explanatory_windows: List[Tuple[int, int]] = []
+    if explanatory_windows_t_by_source:
+        sys_explanatory_windows, _ = derive_system_gt_windows(
+            one_eval,
+            explanatory_windows_t_by_source,
+            k=sys_gt_params.k,
+        )
 
     episode_details = build_episode_details(
         one,
@@ -2227,13 +2447,40 @@ def summarize(
         sys_eps,
         score_col=score_col,
         step_minutes=step_minutes,
-        hot_dict_by_t=hot_dict_by_t,
+        instant_hot_dict_by_t=instant_hot_dict_by_t,
+        model_warmth_dict_by_t=model_warmth_dict_by_t,
+        group_instant_count_by_t=group_instant_count_by_t,
+        group_warmth_dict_by_t=group_warmth_dict_by_t,
         group_hot_dict_by_t=group_hot_dict_by_t,
         active_groups_by_t=active_groups_by_t,
         gt_windows=sys_gt_windows,
         sys_eval=sys_eval,
         min_eval_t=t_min,
     )
+    matched_explanatory_eps, _ = _match_explanatory_episodes(
+        sys_eps,
+        sys_explanatory_windows,
+    )
+
+    strict_fp_eps: List[Tuple[int, int]] = []
+    if sys_eval is not None:
+        strict_fp_eps = [(int(a), int(b)) for a, b in sys_eval.false_positive_episodes]
+
+    unexplained_false_positive_eps = [
+        ep for ep in strict_fp_eps
+        if not _episode_overlaps_any_window(ep, sys_explanatory_windows)
+    ]
+
+    adjusted_precision = None
+    if sys_eval is not None:
+        matched_eps = int(sys_eval.matched_episodes)
+        denom = matched_eps + len(unexplained_false_positive_eps)
+        adjusted_precision = (matched_eps / denom) if denom > 0 else None
+
+    explanatory_set = {(int(a), int(b)) for a, b in matched_explanatory_eps}
+    for ep in episode_details:
+        key = (int(ep["t_start"]), int(ep["t_end"]))
+        ep["explanatory_matched"] = bool(key in explanatory_set)
     episode_takeaways = summarize_episode_takeaways(episode_details)
 
     # Emit summary
@@ -2268,8 +2515,9 @@ def summarize(
             "score_key": decision.score_key,
             "score_col": score_col,
             "threshold_effective": float(threshold),
-            "k": decision.k,
-            "window_size": decision.window_size,
+            "warmth_window_size": decision.warmth_window_size,
+            "group_k": decision.group_k,
+            "min_system_len": decision.min_system_len,
         },
         "alerts": {
             "alert_timesteps": int(one_eval["alert"].sum()),
@@ -2282,6 +2530,23 @@ def summarize(
                 "episodes_merged": [[int(a), int(b)] for a, b in sys_eps],
                 "episodes_postprocessed": [[int(a), int(b)] for a, b in sys_eps],
                 "episodes": sys_eps,
+            },
+            "explanatory": {
+                "windows": [[int(a), int(b)] for a, b in sys_explanatory_windows],
+                "matched_episodes": [[int(a), int(b)] for a, b in matched_explanatory_eps],
+                "matched_episode_count": int(len(matched_explanatory_eps)),
+            },
+            "false_positive_accounting": {
+                "strict_false_positive_episodes": [[int(a), int(b)] for a, b in strict_fp_eps],
+                "unexplained_false_positive_episodes": [[int(a), int(b)] for a, b in unexplained_false_positive_eps],
+                "strict_false_positive_count": int(len(strict_fp_eps)),
+                "unexplained_false_positive_count": int(len(unexplained_false_positive_eps)),
+                "adjusted_precision_excluding_explanatory": adjusted_precision,
+            },
+            "system_hot": {
+                "timesteps": int(one_eval["system_hot"].sum()) if "system_hot" in one_eval.columns else 0,
+                "rate": float(one_eval["system_hot"].mean()) if ("system_hot" in one_eval.columns and n_steps) else 0.0,
+                "max_streak": int(pd.to_numeric(one_eval.get("system_hot_streak"), errors="coerce").fillna(0).max()) if "system_hot_streak" in one_eval.columns else 0,
             },
             "episode_takeaways": episode_takeaways,
         },
@@ -2393,8 +2658,10 @@ def summarize(
             md.append(
                 f"- Strongest non-GT episode: **#{sn['episode_id']}** "
                 f"t={sn['t_start']}..{sn['t_end']} "
-                f"(len={sn['length_steps']}, peak_system_score={sn['peak_system_score']}) "
-                f"active_models={sn['active_models_union']}\n"
+                f"(len={sn['length_steps']}, "
+                f"peak_system_hot_count={sn['peak_system_hot_count']}, "
+                f"peak_system_hot_streak={sn['peak_system_hot_streak']}) "
+                f"active_models={sn['active_models_instant_union']}\n"
             )
         md.append("\n")
         if gt_excluded_by_source:
@@ -2410,8 +2677,12 @@ def summarize(
         md.append(f"- method: `{decision.method}`\n")
         md.append(f"- score_col: `{score_col}` (score_key=`{decision.score_key}`)\n")
         md.append(f"- threshold_effective: **{threshold}**\n")
-        md.append(f"- kofn_window: k={decision.k}, window_size={decision.window_size}, per_model_hits={decision.per_model_hits}\n\n")
-
+        md.append(
+            f"- grouped_consensus: "
+            f"warmth_window_size={decision.warmth_window_size}, "
+            f"group_k={decision.group_k}, "
+            f"min_system_len={decision.min_system_len}\n\n"
+        )
         md.append("## Per-model eval (GT windows → detection episodes)\n\n")
         if by_model:
             md.append("| Model | Sources | GT | Episodes | P | R | F1 | Lag p50 (steps) |\n")

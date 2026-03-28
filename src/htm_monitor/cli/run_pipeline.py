@@ -43,16 +43,15 @@ def run(
         # IMPORTANT: do not feed warmup steps into decision buffers.
         if in_warmup:
             result = {
-                "system_score": 0.0,
                 "alert": 0,
-                "hot_by_model": {},
-                "window_hot_by_model": {},
-                "active_groups": [],
-                "window_hot_by_group": {},
-                "num_window_hot_groups": 0,
-                "group_alert_eligible_now": 0,
-                "group_consecutive_count": 0,
-                "candidate_episode_len": 0,
+                "system_hot": 0,
+                "system_hot_count": 0,
+                "system_hot_streak": 0,
+                "instant_hot_by_model": {},
+                "model_warmth_by_model": {},
+                "group_instant_count": {},
+                "group_warmth": {},
+                "group_hot": {},
             }
         else:
             result = decision.step(model_outputs)
@@ -459,8 +458,9 @@ def _write_manifest(
             "score_key": (cfg.get("decision", {}) or {}).get("score_key"),
             "score_key_effective": str(decision_score_key_effective),
             "threshold": (cfg.get("decision", {}) or {}).get("threshold"),
-            "k": (cfg.get("decision", {}) or {}).get("k"),
-            "window": (cfg.get("decision", {}) or {}).get("window"),
+            "model_warmth": (cfg.get("decision", {}) or {}).get("model_warmth"),
+            "system": (cfg.get("decision", {}) or {}).get("system"),
+            "groups": (cfg.get("decision", {}) or {}).get("groups"),
         },
         "run": {
             "out_csv": str(out_csv),
@@ -698,14 +698,16 @@ def main() -> None:
         rec_every = int(rec_cfg.get("every", 1) or 1)
         rec_dpi = int(rec_cfg.get("dpi", 140) or 140)
 
-    grouping_cfg = ((cfg.get("decision") or {}).get("grouping") or {})
-    raw_groups = grouping_cfg.get("groups") or {}
-    if raw_groups is not None and not isinstance(raw_groups, dict):
-        raise ValueError("decision.grouping.groups must be a mapping if provided")
+    decision_groups_cfg = ((cfg.get("decision") or {}).get("groups") or {})
+    if decision_groups_cfg is not None and not isinstance(decision_groups_cfg, dict):
+        raise ValueError("decision.groups must be a mapping if provided")
 
     model_group_membership: Dict[str, str] = {}
-    if isinstance(raw_groups, dict):
-        for gname, members in raw_groups.items():
+    if isinstance(decision_groups_cfg, dict):
+        for gname, gspec in decision_groups_cfg.items():
+            if not isinstance(gspec, dict):
+                continue
+            members = gspec.get("members") or []
             if not isinstance(members, list):
                 continue
             for m in members:
@@ -745,15 +747,12 @@ def main() -> None:
                 "t", "timestamp", "model",
                 "in_warmup", "learn",
                 "raw", "p", "likelihood", "score",
-                "system_score", "alert",
-                "hot_by_model",
-                "window_hot_by_model",
-                "active_groups",
-                "window_hot_by_group",
-                "num_window_hot_groups",
-                "group_alert_eligible_now",
-                "group_consecutive_count",
-                "candidate_episode_len",
+                "system_hot", "system_hot_count", "system_hot_streak", "alert",
+                "instant_hot_by_model",
+                "model_warmth_by_model",
+                "group_instant_count",
+                "group_warmth",
+                "group_hot",
             ],
         )
         w.writeheader()
@@ -831,24 +830,22 @@ def main() -> None:
                 if step_pause > 0:
                     time.sleep(step_pause)
 
-            sys_score = result.get("system_score") if isinstance(result, dict) else None
-            alert = result.get("alert") if isinstance(result, dict) else None
-            hot_by_model = result.get("hot_by_model") if isinstance(result, dict) else None
-            window_hot_by_model = result.get("window_hot_by_model") if isinstance(result, dict) else None
-            window_hot_by_group = result.get("window_hot_by_group") if isinstance(result, dict) else None
-            num_window_hot_groups = result.get("num_window_hot_groups") if isinstance(result, dict) else None
-            group_alert_eligible_now = result.get("group_alert_eligible_now") if isinstance(result, dict) else None
-            group_consecutive_count = result.get("group_consecutive_count") if isinstance(result, dict) else None
+            system_hot = result.get("system_hot") if isinstance(result, dict) else None
+            system_hot_count = result.get("system_hot_count") if isinstance(result, dict) else None
+            system_hot_streak = result.get("system_hot_streak") if isinstance(result, dict) else None
 
-            hot_by_model_json = json.dumps(hot_by_model, sort_keys=True) if hot_by_model is not None else None
-            window_hot_by_model_json = (
-                json.dumps(window_hot_by_model, sort_keys=True)
-                if window_hot_by_model is not None else None
-            )
-            window_hot_by_group_json = (
-                json.dumps(window_hot_by_group, sort_keys=True)
-                if window_hot_by_group is not None else None
-            )
+            alert = result.get("alert") if isinstance(result, dict) else None
+            instant_hot_by_model = result.get("instant_hot_by_model") if isinstance(result, dict) else None
+            model_warmth_by_model = result.get("model_warmth_by_model") if isinstance(result, dict) else None
+            group_instant_count = result.get("group_instant_count") if isinstance(result, dict) else None
+            group_warmth = result.get("group_warmth") if isinstance(result, dict) else None
+            group_hot = result.get("group_hot") if isinstance(result, dict) else None
+
+            instant_hot_by_model_json = json.dumps(instant_hot_by_model, sort_keys=True) if instant_hot_by_model is not None else None
+            model_warmth_by_model_json = json.dumps(model_warmth_by_model, sort_keys=True) if model_warmth_by_model is not None else None
+            group_instant_count_json = json.dumps(group_instant_count, sort_keys=True) if group_instant_count is not None else None
+            group_warmth_json = json.dumps(group_warmth, sort_keys=True) if group_warmth is not None else None
+            group_hot_json = json.dumps(group_hot, sort_keys=True) if group_hot is not None else None
 
             # write one line per model output
             score_key = decision_score_key_engine
@@ -864,17 +861,16 @@ def main() -> None:
                         "raw": out.get("raw"),
                         "p": out.get("p"),
                         "likelihood": out.get("likelihood"),
-                        "system_score": sys_score,
                         "score": score_val,
+                        "system_hot": system_hot,
+                        "system_hot_count": system_hot_count,
+                        "system_hot_streak": system_hot_streak,
                         "alert": alert,
-                        "hot_by_model": hot_by_model_json,
-                        "window_hot_by_model": window_hot_by_model_json,
-                        "active_groups": json.dumps(result.get("active_groups", [])),
-                        "window_hot_by_group": window_hot_by_group_json,
-                        "num_window_hot_groups": num_window_hot_groups,
-                        "group_alert_eligible_now": group_alert_eligible_now,
-                        "group_consecutive_count": group_consecutive_count,
-                        "candidate_episode_len": result.get("candidate_episode_len", 0),
+                        "instant_hot_by_model": instant_hot_by_model_json,
+                        "model_warmth_by_model": model_warmth_by_model_json,
+                        "group_instant_count": group_instant_count_json,
+                        "group_warmth": group_warmth_json,
+                        "group_hot": group_hot_json,
                     }
                 )
 
@@ -931,6 +927,7 @@ def main() -> None:
         out_dir = run_paths.analysis_dir
         out_dir.mkdir(parents=True, exist_ok=True)
         df = _load_run_csv(str(outp))
+        has_any_gt = any(bool(sc.event_windows) for sc in sources.values())
         _summarize_run(
             df,
             config_path=args.config,
@@ -938,7 +935,10 @@ def main() -> None:
             max_lag_steps=int(args.analyze_max_lag_steps),
             threshold_override=None,
             prefer_hot_by_model=True,
-            strict=(not bool(args.analyze_non_strict)),
+            strict=(
+                (not bool(args.analyze_non_strict))
+                and bool(has_any_gt)
+            ),
         )
         print(f"[run] wrote -> {out_dir / 'run_summary.json'}")
         print(f"[run] wrote -> {out_dir / 'run_summary.md'}")

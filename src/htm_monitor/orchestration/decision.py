@@ -1,197 +1,199 @@
-# src/htm_monitor/orchestration/decision.py
-
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections import deque
-from typing import Deque, Dict, List, Mapping, Optional, Set
+from typing import Dict, Any, List
 
 
-@dataclass
-class Decision:
-    score_key: str
-    threshold: float
-    method: str = "kofn_window"
-    k: int = 1
-    window_size: int = 1
-    per_model_hits: int = 1
-    grouping_enabled: bool = False
-    group_k: Optional[int] = None
-    model_groups: Optional[Dict[str, List[str]]] = None
-    min_consecutive_group_steps: int = 1
-    min_alert_len: int = 1
+class GroupedConsensusDecision:
+    """
+    Phase 2 decision logic:
 
-    def __post_init__(self) -> None:
-        if self.method != "kofn_window":
-            raise ValueError(f"Unsupported decision.method: {self.method}")
-        if not isinstance(self.score_key, str) or not self.score_key:
-            raise ValueError("Decision.score_key must be a non-empty string")
-        if self.window_size < 1:
-            raise ValueError("Decision.window_size must be >= 1")
-        if self.per_model_hits < 1:
-            raise ValueError("Decision.per_model_hits must be >= 1")
-        if self.k < 1:
-            raise ValueError("Decision.k must be >= 1")
-        if self.min_consecutive_group_steps < 1:
-            raise ValueError("Decision.min_consecutive_group_steps must be >= 1")
-        if self.min_alert_len < 1:
-            raise ValueError("Decision.min_alert_len must be >= 1")
-        if self.group_k is not None and int(self.group_k) < 1:
-            raise ValueError("Decision.group_k must be >= 1 if provided")
- 
-        self.grouping_enabled = bool(self.grouping_enabled)
-        self.group_k = int(self.group_k) if self.group_k is not None else int(self.k)
+    - Per-model:
+        instant_hot (threshold)
+        warmth (rolling mean of instant_hot)
 
-        raw_groups = self.model_groups or {}
-        if not isinstance(raw_groups, dict):
-            raise ValueError("Decision.model_groups must be a mapping if provided")
+    - Per-group:
+        group_hot if:
+            (instant support) OR (warmth support)
 
-        normalized_groups: Dict[str, List[str]] = {}
-        seen_models: Set[str] = set()
-        for gname, members in raw_groups.items():
-            if not isinstance(gname, str) or not gname:
-                raise ValueError("Decision.model_groups keys must be non-empty strings")
+    - System:
+        system_hot if >= group_k groups hot
+
+    - Alert:
+        alert if system_hot persists for min_system_len steps
+
+    This replaces:
+        - window_hot
+        - per_model_hits
+        - grouping consecutive logic
+        - candidate episodes
+    """
+
+    def __init__(self, config: Dict[str, Any]):
+        decision = config.get("decision") or {}
+        if not isinstance(decision, dict):
+            raise ValueError("config.decision must be a mapping")
+
+        # --- Core params ---
+        self.threshold: float = float(decision.get("threshold", 0.99))
+        self.score_key: str = str(decision.get("score_key", "p"))
+
+        # --- Warmth ---
+        model_warmth_cfg = decision.get("model_warmth") or {}
+        self.warmth_window_size: int = int(model_warmth_cfg.get("window_size", 8))
+        if self.warmth_window_size <= 0:
+            raise ValueError("model_warmth.window_size must be > 0")
+
+        # --- System ---
+        system_cfg = decision.get("system") or {}
+        self.group_k: int = int(system_cfg.get("group_k", 1))
+        self.min_system_len: int = int(system_cfg.get("min_system_len", 1))
+
+        if self.group_k <= 0:
+            raise ValueError("system.group_k must be > 0")
+        if self.min_system_len <= 0:
+            raise ValueError("system.min_system_len must be > 0")
+
+        # --- Groups ---
+        groups_cfg = decision.get("groups") or {}
+        if not isinstance(groups_cfg, dict) or not groups_cfg:
+            raise ValueError("decision.groups must be a non-empty mapping")
+
+        self.groups: Dict[str, Dict[str, Any]] = {}
+        self.all_models: List[str] = []
+
+        for gname, gspec in groups_cfg.items():
+            if not isinstance(gspec, dict):
+                raise ValueError(f"group '{gname}' must be a mapping")
+
+            members = gspec.get("members") or []
             if not isinstance(members, list) or not members:
-                raise ValueError(
-                    f"Decision.model_groups['{gname}'] must be a non-empty list[str]"
-                )
+                raise ValueError(f"group '{gname}' must have non-empty members list")
 
-            out_members: List[str] = []
+            min_instant_members = int(gspec.get("min_instant_members", 1))
+            min_group_warmth = float(gspec.get("min_group_warmth", 0.5))
+
+            if min_instant_members <= 0:
+                raise ValueError(f"group '{gname}': min_instant_members must be > 0")
+            if not (0.0 <= min_group_warmth <= 1.0):
+                raise ValueError(f"group '{gname}': min_group_warmth must be in [0,1]")
+
+            self.groups[gname] = {
+                "members": list(members),
+                "min_instant_members": min_instant_members,
+                "min_group_warmth": min_group_warmth,
+            }
+
             for m in members:
-                if not isinstance(m, str) or not m:
-                    raise ValueError(
-                        f"Decision.model_groups['{gname}'] entries must be non-empty strings"
-                    )
-                if m in seen_models:
-                    raise ValueError(
-                        f"Model '{m}' appears in more than one decision group"
-                    )
-                seen_models.add(m)
-                out_members.append(str(m))
-            normalized_groups[str(gname)] = out_members
+                if m not in self.all_models:
+                    self.all_models.append(m)
 
-        self.model_groups = normalized_groups
-        self._buf: Dict[str, Deque[int]] = {}
-        self._count: Dict[str, int] = {}
-        self._group_consecutive_count: int = 0
-        self._candidate_episode_len: int = 0
+        # --- Model buffers ---
+        self.model_buffers: Dict[str, deque] = {
+            m: deque(maxlen=self.warmth_window_size) for m in self.all_models
+        }
 
-    def _effective_groups(self, model_names: List[str]) -> Dict[str, List[str]]:
+        # --- System state ---
+        self.system_hot_streak: int = 0
+
+    # ---------------------------------------------------------
+    # Core step
+    # ---------------------------------------------------------
+    def step(self, model_outputs: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Return decision groups for the models present at this timestep.
+        model_outputs:
+            {
+                "model_name": {
+                    "p": float,
+                    ...
+                }
+            }
         """
-        if not self.grouping_enabled:
-            return {}
 
-        groups: Dict[str, List[str]] = {}
-        assigned: Set[str] = set()
+        # -------------------------
+        # 1. Instant hot
+        # -------------------------
+        instant_hot: Dict[str, int] = {}
 
-        for gname, members in (self.model_groups or {}).items():
-            present = [m for m in members if m in model_names]
-            if present:
-                groups[gname] = present
-                assigned.update(present)
+        for m in self.all_models:
+            out = model_outputs.get(m)
+            if out is None:
+                instant_hot[m] = 0
+                continue
 
-        missing = [m for m in model_names if m not in assigned]
-        if missing:
-            raise ValueError(
-                "Grouping is enabled but some models are not assigned to any group: "
-                f"{missing}"
+            score = float(out.get(self.score_key, 0.0))
+            instant_hot[m] = 1 if score >= self.threshold else 0
+
+        # -------------------------
+        # 2. Update buffers
+        # -------------------------
+        for m in self.all_models:
+            self.model_buffers[m].append(instant_hot[m])
+
+        # -------------------------
+        # 3. Model warmth
+        # -------------------------
+        model_warmth: Dict[str, float] = {}
+
+        for m, buf in self.model_buffers.items():
+            if len(buf) == 0:
+                model_warmth[m] = 0.0
+            else:
+                model_warmth[m] = sum(buf) / float(len(buf))
+
+        # -------------------------
+        # 4. Group stats
+        # -------------------------
+        group_instant_count: Dict[str, int] = {}
+        group_warmth: Dict[str, float] = {}
+        group_hot: Dict[str, int] = {}
+
+        for gname, gspec in self.groups.items():
+            members = gspec["members"]
+
+            inst_count = sum(instant_hot[m] for m in members)
+            group_instant_count[gname] = inst_count
+
+            if members:
+                g_warmth = sum(model_warmth[m] for m in members) / float(len(members))
+            else:
+                g_warmth = 0.0
+
+            group_warmth[gname] = g_warmth
+
+            is_hot = (
+                inst_count >= gspec["min_instant_members"]
+                or g_warmth >= gspec["min_group_warmth"]
             )
 
-        return groups
+            group_hot[gname] = 1 if is_hot else 0
 
-    def step(self, model_outputs: Mapping[str, Mapping]) -> Dict:
-        if not model_outputs:
-            raise ValueError("Decision.step received empty model_outputs")
-        
-        # lazily initialize per-model buffers
-        for m in model_outputs.keys():
-            if m not in self._buf:
-                self._buf[m] = deque(maxlen=self.window_size)
-                self._count[m] = 0
+        # -------------------------
+        # 5. System
+        # -------------------------
+        system_hot_count = sum(group_hot.values())
+        system_hot = 1 if system_hot_count >= self.group_k else 0
 
-        hot_by_model: Dict[str, int] = {}
-        window_hot_by_model: Dict[str, int] = {}
-
-        for m, out in model_outputs.items():
-            score = out.get(self.score_key)
-            hot = 1 if (isinstance(score, (int, float)) and score >= self.threshold) else 0
-
-            buf = self._buf[m]
-            cnt = self._count[m]
-
-            # pop left if deque is full (we track count explicitly)
-            if len(buf) == buf.maxlen:
-                old = buf[0]
-                cnt -= old
-
-            buf.append(hot)
-            cnt += hot
-            self._count[m] = cnt
-
-            hot_by_model[m] = hot
-            window_hot_by_model[m] = 1 if cnt >= self.per_model_hits else 0
-
-        window_hot_by_group: Dict[str, int] = {}
-        num_window_hot_groups = 0
-        group_alert_eligible_now = 0
-        
-        if self.grouping_enabled:
-            groups = self._effective_groups(list(model_outputs.keys()))
-
-            if self.group_k > len(groups):
-                raise ValueError(
-                    f"Decision.group_k={self.group_k} exceeds number of active groups={len(groups)}"
-                )
-
-            for gname, members in groups.items():
-                window_hot_by_group[gname] = 1 if any(
-                    window_hot_by_model.get(m, 0) for m in members
-                ) else 0
-
-            num_window_hot_groups = int(sum(window_hot_by_group.values()))
-
-            # 🔴 NEW: instantaneous eligibility
-            group_alert_eligible_now = 1 if num_window_hot_groups >= self.group_k else 0
-
-            # 🔴 NEW: consecutive enforcement
-            if group_alert_eligible_now:
-                self._group_consecutive_count += 1
-            else:
-                self._group_consecutive_count = 0
-
-            # Candidate alert (passes short-term stabilizer)
-            candidate_alert = 1 if self._group_consecutive_count >= self.min_consecutive_group_steps else 0
-
-            # Track sustained episode length
-            if candidate_alert:
-                self._candidate_episode_len += 1
-            else:
-                self._candidate_episode_len = 0
-
-            # FINAL alert (reportable, sustained consensus)
-            alert = 1 if self._candidate_episode_len >= self.min_alert_len else 0
-
-            system_score = num_window_hot_groups / max(1, len(groups))
-
+        if system_hot:
+            self.system_hot_streak += 1
         else:
-            num_window_hot = sum(window_hot_by_model.values())
-            alert = 1 if num_window_hot >= self.k else 0
-            system_score = num_window_hot / max(1, len(window_hot_by_model))
+            self.system_hot_streak = 0
 
-        out = {
-             "system_score": float(system_score),
-             "alert": int(alert),
-             "hot_by_model": hot_by_model,
-             "window_hot_by_model": window_hot_by_model,  # optional but useful
-         }
-        if self.grouping_enabled:
-            out["active_groups"] = list(groups.keys())
-            out["window_hot_by_group"] = window_hot_by_group
-            out["num_window_hot_groups"] = int(num_window_hot_groups)
-            out["group_alert_eligible_now"] = int(group_alert_eligible_now)
-            out["group_consecutive_count"] = int(self._group_consecutive_count)
-            out["candidate_episode_len"] = int(self._candidate_episode_len)
+        alert = 1 if self.system_hot_streak >= self.min_system_len else 0
 
-        return out
+        # -------------------------
+        # Return payload
+        # -------------------------
+        return {
+            "alert": alert,
+            "system_hot": system_hot,
+            "system_hot_count": system_hot_count,
+            "system_hot_streak": self.system_hot_streak,
+
+            "instant_hot_by_model": dict(instant_hot),
+            "model_warmth_by_model": dict(model_warmth),
+
+            "group_instant_count": dict(group_instant_count),
+            "group_warmth": dict(group_warmth),
+            "group_hot": dict(group_hot),
+        }

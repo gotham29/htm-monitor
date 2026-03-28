@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Set, Optional
 from htm_monitor.htm_src.feature import Feature
 from htm_monitor.htm_src.htm_model import HTMmodel
 from htm_monitor.orchestration.engine import Engine
-from htm_monitor.orchestration.decision import Decision
+from htm_monitor.orchestration.decision import GroupedConsensusDecision
 
 
 def _load_yaml_mapping(path: str) -> Dict[str, Any]:
@@ -245,109 +245,89 @@ def build_from_config(defaults_path: str, user_path: str):
 
     dcfg = _require_mapping(cfg, "decision")
 
-    # Optional windowed decision config:
-    # decision:
-    #   method: kofn_window
-    #   window:
-    #     size: 12
-    #     per_model_hits: 2
-    #   grouping:
-    #     enabled: true
-    #     k: 2
-    #     min_consecutive_group_steps: 2
-    #     groups:
-    #       demand_group: [demand_model]
-    #       net_generation_group: [net_generation_model]
-    #       imbalance_group: [imbalance_model, imbalance_delta_model, imbalance_residual_model]
-    wraw = dcfg.get("window") or {}
-    if not isinstance(wraw, dict):
-        raise ValueError("decision.window must be a mapping if provided")
-    wcfg: Dict[str, Any] = dict(wraw)
-    window_size = int(wcfg.get("size", 1) or 1)
-    per_model_hits = int(wcfg.get("per_model_hits", 1) or 1)
+    # ---------------------------------------------------------
+    # Phase 2 grouped_consensus decision contract
+    # ---------------------------------------------------------
+    method = str(dcfg.get("method") or "").strip()
+    if method != "grouped_consensus":
+        raise ValueError(
+            "Config.decision.method must be 'grouped_consensus' for the new decision contract"
+        )
 
-    graw = dcfg.get("grouping") or {}
-    if not isinstance(graw, dict):
-        raise ValueError("decision.grouping must be a mapping if provided")
+    model_warmth_cfg = dcfg.get("model_warmth") or {}
+    if not isinstance(model_warmth_cfg, dict):
+        raise ValueError("decision.model_warmth must be a mapping")
+    warmth_window_size = int(model_warmth_cfg.get("window_size", 8))
+    if warmth_window_size <= 0:
+        raise ValueError("decision.model_warmth.window_size must be > 0")
 
-    grouping_enabled = bool(graw.get("enabled", False))
-    group_k_raw = graw.get("k", dcfg.get("k"))
-    group_k = int(group_k_raw) if group_k_raw is not None else None
-    min_consecutive_group_steps = int(graw.get("min_consecutive_group_steps", 1) or 1)
-    min_alert_len = int(graw.get("min_alert_len", 1) or 1)
+    system_cfg = dcfg.get("system") or {}
+    if not isinstance(system_cfg, dict):
+        raise ValueError("decision.system must be a mapping")
+    group_k = int(system_cfg.get("group_k", 0))
+    min_system_len = int(system_cfg.get("min_system_len", 0))
+    if group_k <= 0:
+        raise ValueError("decision.system.group_k must be > 0")
+    if min_system_len <= 0:
+        raise ValueError("decision.system.min_system_len must be > 0")
 
-    if min_consecutive_group_steps < 1:
-        raise ValueError("decision.grouping.min_consecutive_group_steps must be >= 1")
-    if min_alert_len < 1:
-        raise ValueError("decision.grouping.min_alert_len must be >= 1")
+    groups_cfg = dcfg.get("groups") or {}
+    if not isinstance(groups_cfg, dict) or not groups_cfg:
+        raise ValueError("decision.groups must be a non-empty mapping")
 
-    model_groups_raw = graw.get("groups") or {}
-    if not isinstance(model_groups_raw, dict):
-        raise ValueError("decision.grouping.groups must be a mapping if provided")
-
-    model_groups: Dict[str, List[str]] = {}
-    for gname, members in model_groups_raw.items():
+    # Validate group definitions and model references.
+    seen_models: Dict[str, str] = {}
+    for gname, gspec in groups_cfg.items():
         if not isinstance(gname, str) or not gname:
-            raise ValueError("decision.grouping.groups keys must be non-empty strings")
+            raise ValueError("decision.groups keys must be non-empty strings")
+        if not isinstance(gspec, dict):
+            raise ValueError(f"decision.groups['{gname}'] must be a mapping")
+
+        members = gspec.get("members") or []
         if not isinstance(members, list) or not members:
             raise ValueError(
-                f"decision.grouping.groups['{gname}'] must be a non-empty list[str]"
+                f"decision.groups['{gname}'].members must be a non-empty list[str]"
             )
 
-        out_members: List[str] = []
+        min_instant_members = int(gspec.get("min_instant_members", 0))
+        min_group_warmth = float(gspec.get("min_group_warmth", -1.0))
+        if min_instant_members <= 0:
+            raise ValueError(
+                f"decision.groups['{gname}'].min_instant_members must be > 0"
+            )
+        if not (0.0 <= min_group_warmth <= 1.0):
+            raise ValueError(
+                f"decision.groups['{gname}'].min_group_warmth must be in [0,1]"
+            )
+
+        if min_instant_members > len(members):
+            raise ValueError(
+                f"decision.groups['{gname}'].min_instant_members={min_instant_members} "
+                f"cannot exceed number of members={len(members)}"
+
+            )
+
         for m in members:
             if not isinstance(m, str) or not m:
                 raise ValueError(
-                    f"decision.grouping.groups['{gname}'] entries must be non-empty strings"
+                    f"decision.groups['{gname}'].members entries must be non-empty strings"
                 )
             if m not in models:
                 raise ValueError(
-                    f"decision.grouping.groups['{gname}'] references unknown model '{m}'"
+                    f"decision.groups['{gname}'] references unknown model '{m}'"
                 )
-            out_members.append(m)
-        model_groups[gname] = out_members
+            prev = seen_models.get(m)
+            if prev is not None:
+                raise ValueError(
+                    f"Model '{m}' appears in multiple decision.groups: '{prev}' and '{gname}'"
+                )
+            seen_models[m] = gname
 
-    if grouping_enabled:
-        if not model_groups:
-            raise ValueError(
-                "decision.grouping.enabled=true requires decision.grouping.groups"
-            )
-        if group_k is None:
-            raise ValueError(
-                "decision.grouping.enabled=true requires decision.grouping.k "
-                "(or decision.k as fallback)"
-            )
-        if group_k < 1:
-            raise ValueError("decision.grouping.k must be >= 1")
-        if group_k > len(model_groups):
-            raise ValueError(
-                f"decision.grouping.k={group_k} cannot exceed number of groups={len(model_groups)}"
-            )
+    if group_k > len(groups_cfg):
+        raise ValueError(
+            f"decision.system.group_k={group_k} cannot exceed number of groups={len(groups_cfg)}"
+        )
 
-        # Optional but strongly recommended: keep grouping unambiguous.
-        seen_models: Dict[str, str] = {}
-        for gname, members in model_groups.items():
-            for m in members:
-                prev = seen_models.get(m)
-                if prev is not None:
-                    raise ValueError(
-                        f"Model '{m}' appears in multiple decision.grouping.groups: "
-                        f"'{prev}' and '{gname}'"
-                    )
-                seen_models[m] = gname
-
-    decision = Decision(
-        threshold=dcfg.get("threshold"),
-        method=dcfg.get("method", "max"),
-        k=dcfg.get("k"),
-        window_size=window_size,
-        per_model_hits=per_model_hits,
-        score_key=str(dcfg.get("score_key", "p")),
-        grouping_enabled=grouping_enabled,
-        group_k=group_k,
-        model_groups=model_groups,
-        min_consecutive_group_steps=min_consecutive_group_steps,
-        min_alert_len=min_alert_len,
-    )
+    decision = GroupedConsensusDecision(cfg)
 
     return cfg, engine, decision, model_sources

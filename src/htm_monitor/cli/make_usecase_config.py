@@ -18,7 +18,7 @@ class SourceSpec:
     """
     Canonical GT contract:
       event_windows = [
-        {"name": "...", "start": "...", "end": "..."},
+        {"name": "...", "kind": "primary_gt|explanatory", "start": "...", "end": "..."},
         ...
       ]
 
@@ -92,8 +92,15 @@ class SourceSpec:
             for i, ev in enumerate(self.event_windows):
                 if not isinstance(ev, Mapping):
                     raise TypeError(f"SourceSpec.event_windows[{i}] must be a mapping")
+                kind = ev.get("kind", "primary_gt")
                 start = ev.get("start")
                 end = ev.get("end")
+                if not isinstance(kind, str) or not kind.strip():
+                    raise TypeError(f"SourceSpec.event_windows[{i}].kind must be a non-empty string")
+                if kind.strip() not in {"primary_gt", "explanatory"}:
+                    raise ValueError(
+                        f"SourceSpec.event_windows[{i}].kind must be one of: primary_gt, explanatory"
+                    )
                 if not isinstance(start, str) or not start.strip():
                     raise TypeError(f"SourceSpec.event_windows[{i}].start must be a non-empty string")
                 if not isinstance(end, str) or not end.strip():
@@ -104,29 +111,6 @@ class SourceSpec:
                     raise ValueError(
                         f"SourceSpec.event_windows[{i}] end must be >= start for source '{self.name}'"
                     )
-
-
-def _write_text_atomic(path: Path, text: str) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text)
-    tmp.replace(path)
-
-
-def _require_safe_usecase_name(usecase: str) -> str:
-    """
-    Prevent path traversal / accidental nested paths when we do configs/<usecase>.yaml.
-    Keep it simple: forbid separators and '.' segments.
-    """
-    if not isinstance(usecase, str) or not usecase.strip():
-        raise ValueError("Use-case name is required")
-    u = usecase.strip()
-    if "/" in u or "\\" in u:
-        raise ValueError("Use-case name must not contain path separators ('/' or '\\').")
-    if u in (".", "..") or ".." in u:
-        raise ValueError("Use-case name must not contain '..' path segments.")
-    return u
 
 
 def sources_to_dicts(sources: Sequence[SourceSpec]) -> List[Dict[str, Any]]:
@@ -145,6 +129,7 @@ def sources_to_dicts(sources: Sequence[SourceSpec]) -> List[Dict[str, Any]]:
                         "event_windows": [
                             {
                                 "name": ev.get("name", ""),
+                                "kind": ev.get("kind", "primary_gt"),
                                 "start": ev["start"],
                                 "end": ev["end"],
                             }
@@ -214,9 +199,18 @@ def sources_from_dicts(raw: Sequence[Mapping[str, Any]]) -> List[SourceSpec]:
                 for j, ev in enumerate(evs):
                     if not isinstance(ev, Mapping):
                         raise ValueError(f"sources[{i}].labels.event_windows[{j}] must be a mapping")
+                    kind = ev.get("kind", "primary_gt")
                     start = ev.get("start")
                     end = ev.get("end")
                     name = ev.get("name")
+                    if not isinstance(kind, str) or not kind.strip():
+                        raise ValueError(
+                            f"sources[{i}].labels.event_windows[{j}].kind must be a non-empty string"
+                        )
+                    if kind.strip() not in {"primary_gt", "explanatory"}:
+                        raise ValueError(
+                            f"sources[{i}].labels.event_windows[{j}].kind must be one of: primary_gt, explanatory"
+                        )
                     if not isinstance(start, str) or not start.strip():
                         raise ValueError(f"sources[{i}].labels.event_windows[{j}].start must be a non-empty string")
                     if not isinstance(end, str) or not end.strip():
@@ -224,16 +218,17 @@ def sources_from_dicts(raw: Sequence[Mapping[str, Any]]) -> List[SourceSpec]:
                     event_windows.append(
                         {
                             "name": str(name).strip() if isinstance(name, str) and name.strip() else "",
+                            "kind": kind.strip(),
                             "start": start.strip(),
                             "end": end.strip(),
                         }
                     )
             elif gt_list:
                 # legacy labels.timestamps -> singleton windows
-                event_windows = [{"name": "", "start": ts, "end": ts} for ts in gt_list]
+                event_windows = [{"name": "", "kind": "primary_gt", "start": ts, "end": ts} for ts in gt_list]
         elif gt_list:
             # legacy top-level gt_timestamps
-            event_windows = [{"name": "", "start": ts, "end": ts} for ts in gt_list]
+            event_windows = [{"name": "", "kind": "primary_gt", "start": ts, "end": ts} for ts in gt_list]
 
         out.append(SourceSpec(
             name=str(d["name"]).strip(),
@@ -281,7 +276,7 @@ def _require_float_in_closed01(name: str, v: Any) -> float:
     except Exception:
         raise ValueError(f"{name} must be a float")
     if not (0.0 <= fv <= 1.0):
-        raise ValueError(f"{name} must satisfy 0 <= {name} < 1")
+        raise ValueError(f"{name} must satisfy 0 <= {name} <= 1")
     return fv
 
 
@@ -358,18 +353,13 @@ def build_usecase_config(
     timebase_mode: str = "union",
     on_missing: str = "hold_last",
     # decision defaults
-    decision_score_key: str = "anomaly_probability",
+    decision_score_key: str = "p",
     decision_threshold: float = 0.99,
-    decision_method: str = "kofn_window",
-    decision_k: int = 2,
-    decision_window_size: int = 12,
-    decision_per_model_hits: int = 5,
-    # decision grouping (online / production semantics)
-    decision_grouping_enabled: bool = False,
-    decision_grouping_k: Optional[int] = None,
-    decision_grouping_min_consecutive_group_steps: int = 1,
-    decision_grouping_min_alert_len: int = 1,
-    decision_grouping_groups: Optional[Mapping[str, Sequence[str]]] = None,
+    decision_method: str = "grouped_consensus",
+    decision_model_warmth_window_size: int = 8,
+    decision_system_group_k: int = 2,
+    decision_system_min_system_len: int = 3,
+    decision_groups: Optional[Mapping[str, Mapping[str, Any]]] = None,
     # run lifecycle defaults
     run_warmup_steps: int = 0,
     run_learn_after_warmup: bool = True,
@@ -411,12 +401,14 @@ def build_usecase_config(
     if float(margin) < 0.0:
         raise ValueError("margin must be >= 0")
 
-    decision_k = _require_positive_int("decision_k", decision_k)
-    decision_window_size = _require_positive_int("decision_window_size", decision_window_size)
-    decision_per_model_hits = _require_positive_int("decision_per_model_hits", decision_per_model_hits)
     decision_threshold = float(decision_threshold)
     if not (0.0 <= decision_threshold <= 1.0):
         raise ValueError("decision_threshold must be in [0, 1]")
+    decision_model_warmth_window_size = _require_positive_int(
+        "decision_model_warmth_window_size", decision_model_warmth_window_size
+    )
+    decision_system_group_k = _require_positive_int("decision_system_group_k", decision_system_group_k)
+    decision_system_min_system_len = _require_positive_int("decision_system_min_system_len", decision_system_min_system_len)
     run_warmup_steps = int(run_warmup_steps)
     if run_warmup_steps < 0:
         raise ValueError("run_warmup_steps must be >= 0")
@@ -545,9 +537,18 @@ def build_usecase_config(
                         "labels": {
                             "event_windows": [
                                 (
-                                    {"name": ev["name"], "start": ev["start"], "end": ev["end"]}
+                                    {
+                                        "name": ev["name"],
+                                        "kind": ev.get("kind", "primary_gt"),
+                                        "start": ev["start"],
+                                        "end": ev["end"],
+                                    }
                                     if ev.get("name")
-                                    else {"start": ev["start"], "end": ev["end"]}
+                                    else {
+                                        "kind": ev.get("kind", "primary_gt"),
+                                        "start": ev["start"],
+                                        "end": ev["end"],
+                                    }
                                 )
                                 for ev in src.event_windows
                             ]
@@ -557,34 +558,54 @@ def build_usecase_config(
             }
         )
 
-    grouping_cfg: Optional[Dict[str, Any]] = None
-    if decision_grouping_enabled or decision_grouping_groups:
-        groups_clean: Dict[str, List[str]] = {}
-        valid_models = set(models.keys())
-        for gname, members in (decision_grouping_groups or {}).items():
-            g = str(gname).strip()
-            if not g:
-                raise ValueError("decision_grouping_groups keys must be non-empty strings")
-            if not isinstance(members, Sequence) or len(members) == 0:
-                raise ValueError(f"decision_grouping_groups['{g}'] must be a non-empty sequence")
-            member_list = [str(m).strip() for m in members if str(m).strip()]
-            if not member_list:
-                raise ValueError(f"decision_grouping_groups['{g}'] must contain at least one model")
-            unknown = [m for m in member_list if m not in valid_models]
-            if unknown:
-                raise ValueError(
-                    f"decision_grouping_groups['{g}'] contains unknown model(s): {unknown}. "
-                    f"Valid models: {sorted(valid_models)}"
-                )
-            groups_clean[g] = member_list
+    decision_groups_cfg: Dict[str, Dict[str, Any]] = {}
+    valid_models = set(models.keys())
+    for gname, gspec in (decision_groups or {}).items():
+        g = str(gname).strip()
+        if not g:
+            raise ValueError("decision_groups keys must be non-empty strings")
+        if not isinstance(gspec, Mapping):
+            raise ValueError(f"decision_groups['{g}'] must be a mapping")
 
-        grouping_cfg = {
-            "enabled": bool(decision_grouping_enabled or groups_clean),
-            "k": int(decision_grouping_k) if decision_grouping_k is not None else int(decision_k),
-            "min_consecutive_group_steps": int(decision_grouping_min_consecutive_group_steps),
-            "min_alert_len": int(decision_grouping_min_alert_len),
-            "groups": groups_clean,
+        members = gspec.get("members") or []
+        if not isinstance(members, Sequence) or len(members) == 0:
+            raise ValueError(f"decision_groups['{g}'].members must be a non-empty sequence")
+        member_list = [str(m).strip() for m in members if str(m).strip()]
+        if not member_list:
+            raise ValueError(f"decision_groups['{g}'].members must contain at least one model")
+        unknown = [m for m in member_list if m not in valid_models]
+        if unknown:
+            raise ValueError(
+                f"decision_groups['{g}'] contains unknown model(s): {unknown}. "
+                f"Valid models: {sorted(valid_models)}"
+            )
+
+        min_instant_members = _require_positive_int(
+            f"decision_groups['{g}'].min_instant_members",
+            gspec.get("min_instant_members", 1),
+        )
+        if min_instant_members > len(member_list):
+            raise ValueError(
+                f"decision_groups['{g}'].min_instant_members={min_instant_members} "
+                f"cannot exceed group size={len(member_list)}"
+            )
+
+        min_group_warmth = float(gspec.get("min_group_warmth", 0.5))
+        if not (0.0 <= min_group_warmth <= 1.0):
+            raise ValueError(f"decision_groups['{g}'].min_group_warmth must be in [0,1]")
+
+        decision_groups_cfg[g] = {
+            "members": member_list,
+            "min_instant_members": int(min_instant_members),
+            "min_group_warmth": float(min_group_warmth),
         }
+
+    if not decision_groups_cfg:
+        raise ValueError("decision_groups must define at least one group")
+    if decision_system_group_k > len(decision_groups_cfg):
+        raise ValueError(
+            f"decision_system_group_k={decision_system_group_k} cannot exceed number of groups={len(decision_groups_cfg)}"
+        )
 
     plot_label_colors_cfg: Optional[Dict[str, str]] = None
     if plot_label_color_mode == "explicit":
@@ -612,12 +633,14 @@ def build_usecase_config(
             "score_key": str(decision_score_key),
             "threshold": float(decision_threshold),
             "method": str(decision_method),
-            "k": int(decision_k),
-            "window": {
-                "size": int(decision_window_size),
-                "per_model_hits": int(decision_per_model_hits),
+            "model_warmth": {
+                "window_size": int(decision_model_warmth_window_size),
             },
-            **({"grouping": grouping_cfg} if grouping_cfg is not None else {}),
+            "system": {
+                "group_k": int(decision_system_group_k),
+                "min_system_len": int(decision_system_min_system_len),
+            },
+            "groups": decision_groups_cfg,
         },
 
         "plot": {
@@ -681,18 +704,24 @@ def _parse_ts_list(raw: str) -> List[str]:
 
 def _parse_event_window_line(raw: str, ts_format: str) -> Dict[str, str]:
     parts = [x.strip() for x in str(raw).split("|")]
-    if len(parts) != 3:
+    if len(parts) not in (3, 4):
         raise ValueError(
-            "Event window must be: name|YYYY-mm-dd HH:MM:SS|YYYY-mm-dd HH:MM:SS"
+            "Event window must be: name|start|end or name|kind|start|end"
         )
-    name, start, end = parts
+    if len(parts) == 3:
+        name, start, end = parts
+        kind = "primary_gt"
+    else:
+        name, kind, start, end = parts
     if not name:
         raise ValueError("Event window name cannot be empty")
+    if kind not in {"primary_gt", "explanatory"}:
+        raise ValueError("Event window kind must be one of: primary_gt, explanatory")
     start_dt = datetime.strptime(start, ts_format)
     end_dt = datetime.strptime(end, ts_format)
     if end_dt < start_dt:
         raise ValueError("Event window end must be >= start")
-    return {"name": name, "start": start, "end": end}
+    return {"name": name, "kind": kind, "start": start, "end": end}
 
 
 def _validate_event_windows(
@@ -703,23 +732,26 @@ def _validate_event_windows(
     seen = set()
     for i, ev in enumerate(windows):
         name = str(ev.get("name") or "").strip()
+        kind = str(ev.get("kind") or "primary_gt").strip()
         start = str(ev.get("start") or "").strip()
         end = str(ev.get("end") or "").strip()
 
         if not start or not end:
             raise ValueError(f"event_windows[{i}] must contain start/end")
+        if kind not in {"primary_gt", "explanatory"}:
+            raise ValueError(f"event_windows[{i}].kind must be one of: primary_gt, explanatory")
 
         start_dt = datetime.strptime(start, ts_format)
         end_dt = datetime.strptime(end, ts_format)
         if end_dt < start_dt:
             raise ValueError(f"event_windows[{i}] end must be >= start")
 
-        key = (name, start, end)
+        key = (name, kind, start, end)
         if key in seen:
             continue
         seen.add(key)
 
-        out.append({"name": name, "start": start, "end": end})
+        out.append({"name": name, "kind": kind, "start": start, "end": end})
     return out
 
 
@@ -837,6 +869,8 @@ def collect_sources_interactive() -> List[SourceSpec]:
         print("\n(Optional) Ground-truth event windows for this source.")
         print("Enter one per line as:")
         print("  name|YYYY-mm-dd HH:MM:SS|YYYY-mm-dd HH:MM:SS")
+        print("  name|primary_gt|YYYY-mm-dd HH:MM:SS|YYYY-mm-dd HH:MM:SS")
+        print("  name|explanatory|YYYY-mm-dd HH:MM:SS|YYYY-mm-dd HH:MM:SS")
         print("Press Enter on empty line when done.")
         print("Or enter once:")
         print("  @file:/path/to/event_windows.json")
@@ -901,12 +935,56 @@ def main() -> None:
         chunk_size = _prompt_int("Chunk size (features per model)", 2)
 
     print("\n--- Decision config ---")
-    decision_method = _prompt("decision.method", "kofn_window")
-    decision_k = _prompt_int("decision.k", 2)
-    decision_window_size = _prompt_int("decision.window.size", 24)
-    decision_per_model_hits = _prompt_int("decision.window.per_model_hits", 2)
-    decision_threshold = _prompt_float("decision.threshold", 0.997)
-    decision_score_key = _prompt("decision.score_key", "anomaly_probability")
+    decision_method = _prompt("decision.method", "grouped_consensus")
+    decision_threshold = _prompt_float("decision.threshold", 0.99)
+    decision_score_key = _prompt("decision.score_key", "p")
+    decision_model_warmth_window_size = _prompt_int("decision.model_warmth.window_size", 8)
+    decision_system_group_k = _prompt_int("decision.system.group_k", 2)
+    decision_system_min_system_len = _prompt_int("decision.system.min_system_len", 3)
+
+    print("\n--- Decision groups ---")
+    # Reconstruct the model names exactly as build_usecase_config will.
+    feature_names: List[str] = []
+    for src in sources:
+        feature_names.extend(list(src.fields.keys()))
+
+    model_names: List[str] = []
+    if layout == "separate":
+        for feat_name in feature_names:
+            model_names.append(f"{feat_name}_model")
+    elif layout == "single":
+        model_names.append(f"{usecase}_model")
+    elif layout == "chunk":
+        k = int(chunk_size)
+        for i in range(0, len(feature_names), k):
+            model_names.append(f"{usecase}_chunk_{(i // k) + 1}_model")
+
+    print(f"Available models: {', '.join(model_names)}")
+    decision_groups: Dict[str, Dict[str, Any]] = {}
+    num_groups = _prompt_int("decision.groups.num_groups", len(model_names))
+    for i in range(num_groups):
+        gname = _prompt(f"group {i+1} name", f"group_{i+1}").strip()
+        if not gname:
+            raise ValueError("Group name cannot be empty")
+        members_raw = _prompt(
+            f"models in {gname} (comma-separated)",
+            ",".join([model_names[min(i, len(model_names) - 1)]]),
+        )
+        members = _parse_csv_list(members_raw)
+        if not members:
+            raise ValueError(f"Group '{gname}' must contain at least one model")
+        unknown = [m for m in members if m not in model_names]
+        if unknown:
+            raise ValueError(f"Unknown model(s) in group '{gname}': {unknown}")
+
+        default_min_instant = 1 if len(members) == 1 else min(2, len(members))
+        min_instant_members = _prompt_int(f"{gname}.min_instant_members", default_min_instant)
+        min_group_warmth = _prompt_float(f"{gname}.min_group_warmth", 0.50 if len(members) == 1 else 0.45)
+        decision_groups[gname] = {
+            "members": members,
+            "min_instant_members": int(min_instant_members),
+            "min_group_warmth": float(min_group_warmth),
+        }
 
     print("\n--- Run lifecycle (warmup + learn policy) ---")
     warmup_steps = _prompt_int("run.warmup_steps (timesteps; 0 disables warmup)", 0)
@@ -929,11 +1007,12 @@ def main() -> None:
         model_layout=layout,
         chunk_size=chunk_size,
         decision_method=decision_method,
-        decision_k=decision_k,
-        decision_window_size=decision_window_size,
-        decision_per_model_hits=decision_per_model_hits,
         decision_threshold=decision_threshold,
         decision_score_key=decision_score_key,
+        decision_model_warmth_window_size=decision_model_warmth_window_size,
+        decision_system_group_k=decision_system_group_k,
+        decision_system_min_system_len=decision_system_min_system_len,
+        decision_groups=decision_groups,
         run_warmup_steps=warmup_steps,
         run_learn_after_warmup=learn_after,
     )

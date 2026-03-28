@@ -1,4 +1,4 @@
-#scripts/sweep_powerfrig_seeds.py
+#scripts/sweep_seeds.py
 
 from __future__ import annotations
 
@@ -102,20 +102,27 @@ def load_run_summary(summary_path: Path) -> Dict[str, Any]:
         ((data.get("ground_truth") or {}).get("system") or {}).get("eval")
         or {}
     )
+    fp_acct = (
+        ((data.get("alerts") or {}).get("false_positive_accounting") or {})
+    )
     precision = sys_eval.get("precision")
     recall = sys_eval.get("recall")
     episodes = (((data.get("alerts") or {}).get("episodes") or {}).get("episodes") or [])
 
     fp_episodes = sys_eval.get("false_positive_episodes") or []
+    unexplained_fp_episodes = fp_acct.get("unexplained_false_positive_episodes") or fp_episodes
+    adjusted_precision = fp_acct.get("adjusted_precision_excluding_explanatory")
 
     time_range = data.get("time_range") or {}
 
     return {
         "precision": float(precision) if precision is not None else float("nan"),
+        "adjusted_precision": float(adjusted_precision) if adjusted_precision is not None else float("nan"),
         "recall": float(recall) if recall is not None else float("nan"),
         "n_alert_episodes": int(len(episodes)),
         "episodes": _normalize_eps(episodes),
         "false_positive_episodes": _normalize_eps(fp_episodes),
+        "unexplained_false_positive_episodes": _normalize_eps(unexplained_fp_episodes),
         "time_start": time_range.get("start"),
         "time_end": time_range.get("end"),
     }
@@ -146,15 +153,15 @@ def _cluster_non_gt_candidates(
         meta = {
             "run_name": row["run_name"],
             "base_seed": row["base_seed"],
-            "per_model_hits": row["per_model_hits"],
-            "min_alert_len": row["min_alert_len"],
+            "min_system_len": row["min_system_len"],
             "threshold": row["threshold"],
             "precision": row["precision"],
+            "adjusted_precision": row["adjusted_precision"],
             "recall": row["recall"],
             "run_dir": row["run_dir"],
         }
 
-        for ep in row.get("false_positive_episodes", []):
+        for ep in row.get("unexplained_false_positive_episodes", []):
             matched = None
             for cl in clusters:
                 if _overlap_or_near((cl["t_start"], cl["t_end"]), ep, gap_tolerance):
@@ -185,8 +192,7 @@ def _cluster_non_gt_candidates(
         members = cl["members"]
         seeds = sorted(set(int(m["base_seed"]) for m in members))
         thresholds = sorted(set(float(m["threshold"]) for m in members))
-        per_hits = sorted(set(int(m["per_model_hits"]) for m in members))
-        min_lens = sorted(set(int(m["min_alert_len"]) for m in members))
+        min_system_lens = sorted(set(int(m["min_system_len"]) for m in members))
         starts = [int(m["episode_t_start"]) for m in members]
         ends = [int(m["episode_t_end"]) for m in members]
 
@@ -202,13 +208,10 @@ def _cluster_non_gt_candidates(
                 "unique_seed_count": int(len(seeds)),
                 "seed_list": seeds,
                 "threshold_list": thresholds,
-                "per_model_hits_list": per_hits,
-                "min_alert_len_list": min_lens,
+                "min_system_len_list": min_system_lens,
                 "members": members,
             }
         )
-
-    n_alert_episodes = len(episodes)
 
     out.sort(key=lambda x: (-x["unique_seed_count"], -x["support_count"], x["t_start_median"]))
     return out
@@ -217,22 +220,15 @@ def _cluster_non_gt_candidates(
 def set_decision_params(
     cfg: dict,
     *,
-    per_model_hits: int,
-    min_alert_len: int,
+    min_system_len: int,
 ) -> None:
     decision = cfg.get("decision")
     if not isinstance(decision, dict):
         raise ValueError("Config missing decision block")
-
-    window = decision.get("window")
-    if not isinstance(window, dict):
-        raise ValueError("Config missing decision.window block")
-    window["per_model_hits"] = int(per_model_hits)
-
-    grouping = decision.get("grouping")
-    if not isinstance(grouping, dict):
-        raise ValueError("Config missing decision.grouping block")
-    grouping["min_alert_len"] = int(min_alert_len)
+    system = decision.get("system")
+    if not isinstance(system, dict):
+        raise ValueError("Config missing decision.system block")
+    system["min_system_len"] = int(min_system_len)
 
 
 def set_threshold(cfg: dict, threshold: float) -> None:
@@ -262,18 +258,11 @@ def main() -> None:
         help="Optional explicit feature order for assigning seeds. Defaults to config order.",
     )
     ap.add_argument(
-        "--per-model-hits",
+        "--min-system-len",
         nargs="+",
         type=int,
-        default=[5],
-        help="Values to try for decision.window.per_model_hits",
-    )
-    ap.add_argument(
-        "--min-alert-len",
-        nargs="+",
-        type=int,
-        default=[6],
-        help="Values to try for decision.grouping.min_alert_len",
+        default=[3],
+        help="Values to try for decision.system.min_system_len",
     )
     ap.add_argument(
         "--thresholds",
@@ -312,22 +301,19 @@ def main() -> None:
     rows: List[dict] = []
 
     for threshold in args.thresholds:
-        for per_model_hits in args.per_model_hits:
-            for min_alert_len in args.min_alert_len:
+        for min_system_len in args.min_system_len:
                 for base_seed in args.base_seeds:
                     
                     run_name = (
                         f"seed_{base_seed}"
-                        f"__hits_{per_model_hits}"
-                        f"__alertlen_{min_alert_len}"
+                        f"__syslen_{min_system_len}"
                         f"__th_{threshold}"
                     )
                     cfg = load_yaml(config_path)
                     assigned = apply_seed_block(cfg, base_seed, ordered_features)
                     set_decision_params(
                         cfg,
-                        per_model_hits=per_model_hits,
-                        min_alert_len=min_alert_len,
+                        min_system_len=min_system_len,
                     )
                     set_threshold(cfg, threshold)
 
@@ -372,13 +358,14 @@ def main() -> None:
                     row = {
                         "run_name": run_name,
                         "base_seed": base_seed,
-                        "per_model_hits": per_model_hits,
-                        "min_alert_len": min_alert_len,
+                        "min_system_len": min_system_len,
                         "threshold": threshold,
                         "precision": summary["precision"],
+                        "adjusted_precision": summary["adjusted_precision"],
                         "recall": summary["recall"],
                         "n_alert_episodes": summary["n_alert_episodes"],
                         "false_positive_episodes_json": json.dumps(summary["false_positive_episodes"]),
+                        "unexplained_false_positive_episodes_json": json.dumps(summary["unexplained_false_positive_episodes"]),
                         "alert_episodes_json": json.dumps(summary["episodes"]),
                         "config_path": str(cfg_out),
                         "run_dir": str(run_out),
@@ -394,13 +381,14 @@ def main() -> None:
             fieldnames=[
                 "run_name",
                 "base_seed",
-                "per_model_hits",
-                "min_alert_len",
+                "min_system_len",
                 "threshold",
                 "precision",
+                "adjusted_precision",
                 "recall",
                 "n_alert_episodes",
                 "false_positive_episodes_json",
+                "unexplained_false_positive_episodes_json",
                 "alert_episodes_json",
                 "config_path",
                 "run_dir",
@@ -433,8 +421,7 @@ def main() -> None:
                 "unique_seed_count",
                 "seed_list",
                 "threshold_list",
-                "per_model_hits_list",
-                "min_alert_len_list",
+                "min_system_len_list",
             ],
         )
         writer.writeheader()
@@ -451,8 +438,7 @@ def main() -> None:
                     "unique_seed_count": c["unique_seed_count"],
                     "seed_list": json.dumps(c["seed_list"]),
                     "threshold_list": json.dumps(c["threshold_list"]),
-                    "per_model_hits_list": json.dumps(c["per_model_hits_list"]),
-                    "min_alert_len_list": json.dumps(c["min_alert_len_list"]),
+                    "min_system_len_list": json.dumps(c["min_system_len_list"]),
                 }
             )
 

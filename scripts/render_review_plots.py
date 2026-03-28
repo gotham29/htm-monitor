@@ -76,12 +76,6 @@ def _dedup_steps(run_df: pd.DataFrame) -> pd.DataFrame:
     return one
 
 
-def _add_gap_features(demand_df: pd.DataFrame, netgen_df: pd.DataFrame) -> pd.DataFrame:
-    merged = demand_df.merge(netgen_df, on="ts", how="inner")
-    merged["gap"] = merged["demand"] - merged["net_generation"]
-    return merged[["ts", "demand", "net_generation", "gap"]].copy()
-
-
 def _add_recent_hour_baseline_residual(
     df: pd.DataFrame,
     value_col: str,
@@ -169,11 +163,12 @@ def _parse_json_dict(x: Any) -> Dict[str, Any]:
 
 def _sorted_group_names(run_df: pd.DataFrame) -> List[str]:
     names = set()
-    if "window_hot_by_group" not in run_df.columns:
-        return []
-    for v in run_df["window_hot_by_group"].tolist():
-        d = _parse_json_dict(v)
-        names.update(str(k) for k in d.keys() if str(k).strip())
+    for col in ("group_hot", "window_hot_by_group"):
+        if col not in run_df.columns:
+            continue
+        for v in run_df[col].tolist():
+            d = _parse_json_dict(v)
+            names.update(str(k) for k in d.keys() if str(k).strip())
     return sorted(names)
 
 
@@ -186,6 +181,39 @@ def _shade_region(ax, start_ts: pd.Timestamp, end_ts: pd.Timestamp, *, color: st
     ax.axvspan(start_ts, end_ts, alpha=0.10, color=color)
     ax.axvline(start_ts, linestyle="--", linewidth=1.5)
     ax.axvline(end_ts, linestyle="--", linewidth=1.5)
+
+
+def _feature_label(cfg: dict, feat_name: str) -> str:
+    for src in ((cfg.get("data") or {}).get("sources") or []):
+        fields = dict(src.get("fields") or {})
+        if feat_name in fields:
+            unit = str(src.get("unit") or "").strip()
+            return f"{feat_name} ({unit})" if unit else feat_name
+    return feat_name
+
+
+def _group_hot_series(one_sub: pd.DataFrame, group_name: str) -> List[int]:
+    if "group_hot" in one_sub.columns:
+        return [
+            int(bool(_parse_json_dict(v).get(group_name, 0)))
+            for v in one_sub["group_hot"].tolist()
+        ]
+    if "window_hot_by_group" in one_sub.columns:
+        return [
+            int(bool(_parse_json_dict(v).get(group_name, 0)))
+            for v in one_sub["window_hot_by_group"].tolist()
+        ]
+    return [0] * len(one_sub)
+
+
+def _system_trace(one_sub: pd.DataFrame) -> Tuple[pd.Series, str]:
+    if "system_hot_count" in one_sub.columns:
+        vals = pd.to_numeric(one_sub["system_hot_count"], errors="coerce")
+        return vals, "System hot count"
+    if "system_score" in one_sub.columns:
+        vals = pd.to_numeric(one_sub["system_score"], errors="coerce")
+        return vals, "System score"
+    return pd.Series([0.0] * len(one_sub)), "System signal"
 
 
 def _plot_one_window(
@@ -205,16 +233,9 @@ def _plot_one_window(
     feature_order = _modeled_feature_order(cfg)
     feature_src = _load_modeled_feature_series(cfg)
 
-    if "demand" not in feature_src or "net_generation" not in feature_src:
-        raise ValueError("Expected config to include modeled features 'demand' and 'net_generation'")
+    if not feature_src:
+        raise ValueError("Could not load any modeled feature series from config")
 
-    demand_src = feature_src["demand"]
-    netgen_src = feature_src["net_generation"]
-
-    # Keep the grid-specific gap view because it is useful context,
-    # but do not let it hide the additional modeled signals.
-    gap_src = _add_gap_features(demand_src, netgen_src)
-    gap_src = _add_recent_hour_baseline_residual(gap_src, "gap", history_days=7)
     feature_resid: Dict[str, pd.DataFrame] = {}
     for feat_name, df in feature_src.items():
         feature_resid[feat_name] = _add_recent_hour_baseline_residual(df, feat_name, history_days=7)
@@ -222,7 +243,6 @@ def _plot_one_window(
     feature_sub: Dict[str, pd.DataFrame] = {}
     for feat_name, df in feature_resid.items():
         feature_sub[feat_name] = df[(df["ts"] >= start_ts) & (df["ts"] <= end_ts)].copy()
-    gap_sub = gap_src[(gap_src["ts"] >= start_ts) & (gap_src["ts"] <= end_ts)].copy()
 
     run_sub = run_df[(run_df["ts"] >= start_ts) & (run_df["ts"] <= end_ts)].copy()
     one_sub = one[(one["ts"] >= start_ts) & (one["ts"] <= end_ts)].copy()
@@ -242,28 +262,6 @@ def _plot_one_window(
     ax3 = fig.add_subplot(gs[4, 0], sharex=ax0)
 
     # Panel 1: all modeled raw signals
-    pretty_labels = {
-        "demand": "Demand (MW)",
-        "net_generation": "Net generation (MW)",
-        "imbalance": "Imbalance (MW)",
-        "imbalance_delta": "Imbalance delta",
-        "imbalance_residual": "Imbalance residual",
-    }
-    linewidth_map = {
-        "demand": 2.0,
-        "net_generation": 2.0,
-        "imbalance": 1.8,
-        "imbalance_delta": 1.6,
-        "imbalance_residual": 1.6,
-    }
-    alpha_map = {
-        "demand": 1.0,
-        "net_generation": 1.0,
-        "imbalance": 0.9,
-        "imbalance_delta": 0.9,
-        "imbalance_residual": 0.9,
-    }
-
     for feat_name in feature_order:
         sub = feature_sub.get(feat_name)
         if sub is None or sub.empty:
@@ -271,24 +269,18 @@ def _plot_one_window(
         ax0.plot(
             sub["ts"],
             sub[feat_name],
-            linewidth=linewidth_map.get(feat_name, 1.8),
-            alpha=alpha_map.get(feat_name, 0.9),
-            label=pretty_labels.get(feat_name, feat_name),
+            linewidth=1.8,
+            alpha=0.9,
+            label=_feature_label(cfg, feat_name),
         )
-    ax0.plot(gap_sub["ts"], gap_sub["gap"], linewidth=1.8, alpha=0.8, label="Demand - generation gap (MW)")
-    ax0.set_title("Raw grid signals")
+    ax0.set_title("Raw modeled signals")
     ax0.grid(True, alpha=0.3)
     ax0.legend(loc="upper left", frameon=True)
 
-    ax1.plot(gap_sub["ts"], gap_sub["gap"], linewidth=2.0, label="Gap = demand - generation (MW)")
-    ax1.plot(gap_sub["ts"], gap_sub["gap_resid"], linewidth=2.0, label="Gap residual vs recent same-hour median")
+    # Panel 2: recent-hour residuals for all modeled signals
     ax1.axhline(0.0, linestyle="--", linewidth=1.0, alpha=0.7)
 
-    # Also show recent-hour residuals for additional modeled features so the
-    # plot reflects the 5-signal configuration rather than the old 3-signal one.
     for feat_name in feature_order:
-        if feat_name in ("demand", "net_generation"):
-            continue
         sub = feature_sub.get(feat_name)
         resid_col = f"{feat_name}_resid"
         if sub is None or sub.empty or resid_col not in sub.columns:
@@ -298,10 +290,10 @@ def _plot_one_window(
             sub[resid_col],
             linewidth=1.6,
             alpha=0.9,
-            label=f"{feat_name} residual vs recent same-hour median",
+            label=f"{feat_name} residual",
         )
 
-    ax1.set_title("Grid strain proxy")
+    ax1.set_title("Recent-hour residuals")
     ax1.grid(True, alpha=0.3)
     ax1.legend(loc="upper left", frameon=True)
 
@@ -318,29 +310,25 @@ def _plot_one_window(
 
     # Panel 4: grouped decision activation
     if group_names:
-        group_hot_series = {
-            g: [
-                int(_parse_json_dict(v).get(g, 0))
-                for v in one_sub["window_hot_by_group"].tolist()
-            ]
-            for g in group_names
-        }
         for g in group_names:
-            axg.plot(one_sub["ts"], group_hot_series[g], linewidth=2.0, label=g)
+            axg.plot(one_sub["ts"], _group_hot_series(one_sub, g), linewidth=2.0, label=g)
         axg.set_ylim(-0.05, 1.05)
-        axg.set_title("Group activation (window-hot)")
+        axg.set_title("Group activation")
         axg.grid(True, alpha=0.3)
         axg.legend(loc="upper left", frameon=True)
     else:
         axg.plot([], [])
         axg.set_ylim(-0.05, 1.05)
-        axg.set_title("Group activation (window-hot)")
+        axg.set_title("Group activation")
         axg.grid(True, alpha=0.3)
 
-    ax3.plot(one_sub["ts"], one_sub["system_score"], linewidth=2.0, label="System score")
+    system_vals, system_label = _system_trace(one_sub)
+    ax3.plot(one_sub["ts"], system_vals, linewidth=2.0, label=system_label)
+
     _shade_alert_episodes(ax3, one_sub)
-    ax3.set_ylim(-0.05, 1.05)
-    ax3.set_title("System score and alert episodes")
+    if system_label == "System score":
+        ax3.set_ylim(-0.05, 1.05)
+    ax3.set_title(f"{system_label} and alert episodes")
     ax3.grid(True, alpha=0.3)
     ax3.legend(loc="upper left", frameon=True)
     ax3.set_xlabel("Time")
@@ -364,6 +352,12 @@ def main() -> None:
     ap.add_argument("--run-dir", required=True)
     ap.add_argument("--config", required=True)
     ap.add_argument("--pad-steps", type=int, default=336)
+    ap.add_argument("--start", default=None)
+    ap.add_argument("--end", default=None)
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--title", default=None)
+    ap.add_argument("--event-start", default=None)
+    ap.add_argument("--event-end", default=None)
     args = ap.parse_args()
 
     run_dir = Path(args.run_dir)
@@ -378,12 +372,16 @@ def main() -> None:
     run_df["ts"] = pd.to_datetime(run_df["timestamp"], errors="coerce")
     run_df["raw"] = pd.to_numeric(run_df["raw"], errors="coerce")
     run_df["p"] = pd.to_numeric(run_df["p"], errors="coerce")
-    run_df["system_score"] = pd.to_numeric(run_df["system_score"], errors="coerce")
+    if "system_score" in run_df.columns:
+        run_df["system_score"] = pd.to_numeric(run_df["system_score"], errors="coerce")
+    if "system_hot_count" in run_df.columns:
+        run_df["system_hot_count"] = pd.to_numeric(run_df["system_hot_count"], errors="coerce")
+
     run_df["alert"] = pd.to_numeric(run_df["alert"], errors="coerce").fillna(0).astype(int)
+    if "group_hot" in run_df.columns:
+        run_df["group_hot"] = run_df["group_hot"].apply(_parse_json_dict)
     if "window_hot_by_group" in run_df.columns:
         run_df["window_hot_by_group"] = run_df["window_hot_by_group"].apply(_parse_json_dict)
-    else:
-        run_df["window_hot_by_group"] = [{} for _ in range(len(run_df))]
     run_df = run_df.sort_values(["t", "model"], kind="mergesort").reset_index(drop=True)
 
     one = _dedup_steps(run_df)
@@ -398,6 +396,24 @@ def main() -> None:
 
     gt_dir = analysis_dir / "plots" / "gt_windows"
     alert_dir = analysis_dir / "plots" / "alert_episodes"
+
+    if args.start and args.end and args.out:
+        start_ts = pd.Timestamp(args.start)
+        end_ts = pd.Timestamp(args.end)
+        focal_start = pd.Timestamp(args.event_start) if args.event_start else None
+        focal_end = pd.Timestamp(args.event_end) if args.event_end else None
+        _plot_one_window(
+            run_df=run_df,
+            one=one,
+            cfg=cfg,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            out_path=Path(args.out),
+            title=args.title or f"Review window: {start_ts} to {end_ts}",
+            focal_start=focal_start,
+            focal_end=focal_end,
+        )
+        return
 
     # GT windows
     for i, (gs, ge) in enumerate(gt_windows, start=1):
