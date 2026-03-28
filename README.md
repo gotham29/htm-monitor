@@ -17,24 +17,17 @@ System anomalies fire only when grouped signals agree and persist.
 
 #### Current Status
 - Two labeled outage windows are consistently detected
-- Additional spring 2020 alerts are treated as **explanatory** rather than unexplained false positives due to onset of COVID
+- Additional spring 2020 anomalies are treated as **explanatory** rather than false positives due to onset of COVID
 
 #### Interpretation
-This use case contains at least three alert classes:
+This use case contains at least three anomaly classes:
 
 1. **Primary ground truth**
    - major outage windows in Aug 2020 and Sept 2022
 2. **Explanatory non-outage anomalies**
    - spring 2020 COVID-era transition behavior, which produces real multi-signal disruption
-3. **Residual non-GT alerts**
+3. **Residual non-GT anomalies**
    - shorter episodes not tied to the labeled outages; these appear more consistent with temporary breakdowns in predictability or unlabeled operational shifts than with the primary outage events
-
-Because HTM anomaly probability is sensitive to changes in predictability, not just externally labeled outages, the current evaluation distinguishes:
-- **primary_gt** windows
-- **explanatory** windows
-- remaining unexplained alerts
-
-This produces a more honest account of detector behavior than the earlier single-seed precision claim.
 
 ##### May 2020 System Anomaly
 ![May 2020 System Anomaly](assets/powergrid_ca_may2020.gif)
