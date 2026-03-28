@@ -70,7 +70,7 @@ class _SourceCfg:
     timestamp_format: str
     fields: Dict[str, str]  # canonical_name -> column_name
     unit: Optional[str] = None
-    event_windows: Optional[List[Dict[str, str]]] = None
+    event_windows: Optional[List[Dict[str, str]]] = None  # {name,start,end,kind}
 
 
 def _parse_ts(s: str, fmt: str) -> datetime:
@@ -149,6 +149,11 @@ def _parse_event_windows(labels: Mapping[str, Any], ts_format: str) -> Optional[
         start = ev.get("start")
         end = ev.get("end")
         name = ev.get("name", "")
+        kind = str(ev.get("kind") or "primary_gt").strip() or "primary_gt"
+        if kind not in {"primary_gt", "explanatory"}:
+            raise ValueError(
+                f"labels.event_windows[{i}].kind must be 'primary_gt' or 'explanatory'"
+            )
         if not isinstance(start, str) or not start.strip():
             raise ValueError(f"labels.event_windows[{i}].start must be a non-empty string")
         if not isinstance(end, str) or not end.strip():
@@ -160,6 +165,7 @@ def _parse_event_windows(labels: Mapping[str, Any], ts_format: str) -> Optional[
                 "name": str(name).strip() if isinstance(name, str) else "",
                 "start": start,
                 "end": end,
+                "kind": kind,
             }
         )
     return out
@@ -192,13 +198,23 @@ def _ts_in_event_windows(ts: Optional[str], event_windows: Optional[List[Dict[st
     return False
 
 
-def _load_gt_by_source(sources: Dict[str, _SourceCfg], enabled: bool) -> Optional[Dict[str, List[Dict[str, str]]]]:
+def _load_gt_by_source(
+    sources: Dict[str, _SourceCfg],
+    enabled: bool,
+    *,
+    primary_only: bool = False,
+) -> Optional[Dict[str, List[Dict[str, str]]]]:
     if not enabled:
         return None
     out: Dict[str, List[Dict[str, str]]] = {}
     for name, s in sources.items():
-        if s.event_windows:
-            out[name] = list(s.event_windows)
+        if not s.event_windows:
+            continue
+        wins = list(s.event_windows)
+        if primary_only:
+            wins = [w for w in wins if str(w.get("kind") or "primary_gt") == "primary_gt"]
+        if wins:
+            out[name] = wins
     return out
 
 
@@ -668,7 +684,9 @@ def main() -> None:
     plot_cfg = cfg.get("plot") or {}
     plot = None
     show_gt = bool(plot_cfg.get("show_ground_truth"))
-    gt_by_source = _load_gt_by_source(sources, show_gt)
+    # Live plot should only show primary GT windows.
+    # Explanatory windows remain part of offline analysis semantics.
+    gt_by_source = _load_gt_by_source(sources, show_gt, primary_only=True)
     plot_enabled_effective = bool(plot_cfg.get("enable")) and (not args.no_plot)
 
     predictive_plot_ctx = _predictive_live_plot_context(
