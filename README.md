@@ -62,6 +62,10 @@ Conclusion:
 ![Outage -- Sept 2022](assets/powergrid_ca_sept2022.gif)
 
 ---
+##### COVID Onset -- May 2020
+![COVID Onset -- May 2020](assets/powergrid_ca_may2020.gif)
+
+---
 
 ### SWaT Water Treatment Facilities Failure Detection (yy-yy)
 
