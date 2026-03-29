@@ -88,6 +88,3 @@ Conclusion:
 
 ---
 
-## Getting Started
-
-See `docs/quickstart.md` for usage instructions.
