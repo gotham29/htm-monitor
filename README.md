@@ -7,14 +7,31 @@ Detects system-level anomalies in streaming data by requiring sustained agreemen
 - **System shocks** — short, high-coherence disruptions across signals
 
 ## Method
+Each signal is modeled independently and combined via sustained consensus:
+
+```
+SIGNALS        MODELS            GROUPS            SYSTEM
+
+signal_1   ->  [model_1]  ----\
+signal_2   ->  [model_2]  -----+--> [group A] --\
+                                      hot?     |
+signal_3   ->  [model_3]  ----\                |
+signal_4   ->  [model_4]  -----+--> [group B] --+--> [anomaly]
+signal_5   ->  [model_5]  ----/       hot?     |
+                                              |
+                                    groups vote
+```
+
+Rule:
 - one HTM model per signal
-- related signals grouped
-- system anomaly requires **group agreement + temporal persistence**
+- related signals are grouped
+- each group becomes hot / not hot based on sustained activity
+- system anomaly requires sustained agreement across groups
 
 ## Why this works
 - filters transient noise by requiring temporal persistence
 - captures system structure via grouped signal agreement
-- converts local prediction breakdowns into stable system-level events
+- elevates local prediction breakdowns into stable system-level events
 
 ## Use Cases
 
@@ -30,12 +47,12 @@ Goal:
 - detect known outage events in hourly streaming signals
 
 Result:
-- both labeled outages (Aug 2020, Sept 2022) are detected
+- both labeled outages (Aug 2020, Sept 2022) are consistently detected
 - a regime shift is detected during spring 2020 (COVID onset)
 
 Conclusion:
 - the system reliably detects outages
-- and surfaces broader structural changes and transient system-level disruptions
+- and surfaces broader structural changes and transient system-wide disruptions
 
 ---
 
