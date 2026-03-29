@@ -1,53 +1,66 @@
 # HTM-Monitor
 
-System anomalies fire only when grouped signals agree and persist.
+Detects system-level anomalies in streaming data by requiring sustained agreement across groups of related signals in complex, multi-signal systems such as infrastructure and industrial processes.
+
+**Two anomaly types:**
+- **Regime shifts** — sustained structural changes in system behavior
+- **System shocks** — short, high-coherence disruptions across signals
 
 ## Method
 - one HTM model per signal
-- related signals grouped together
-- system anomaly requires group **agreement + persistence**
+- related signals grouped into functional groups
+- system anomaly requires **group agreement + temporal persistence**
+
+## Why this works
+- filters transient noise by requiring temporal persistence
+- captures system structure via grouped signal agreement
+- converts local prediction breakdowns into stable system-level events
 
 ## Use Cases
 
-### CA Power Grid (2020-22)
+### Power Grid Outage Detection (2020-22)
 
-#### Labeled Anomalies
-- Outage Aug 14-16, 2020
-- Outage Sept 6-9, 2022
+#### Overview
+Monitoring core grid signals:
+- demand
+- net generation
+- imbalance (difference between generation and demand)
 
-#### Current Status
-- Two labeled outage windows are consistently detected
-- Additional spring 2020 anomalies are treated as **explanatory** rather than false positives due to onset of COVID
+Goal:
+- detect known outage events in hourly streaming signals
 
-#### Interpretation
-This use case contains at least three anomaly classes:
+Result:
+- both labeled outages (Aug 2020, Sept 2022) are detected
+- a regime shift is detected during spring 2020 (COVID onset)
 
-1. **Primary ground truth**
-   - major outage windows in Aug 2020 and Sept 2022
-2. **Explanatory non-outage anomalies**
-   - spring 2020 COVID-era transition behavior, which produces real multi-signal disruption
-3. **Residual non-GT anomalies**
-   - shorter episodes not tied to the labeled outages; these appear more consistent with temporary breakdowns in predictability or unlabeled operational shifts than with the primary outage events
-
-##### May 2020 System Anomaly
-![May 2020 System Anomaly](assets/powergrid_ca_may2020.gif)
-
----
-##### Aug 2020 System Anomaly
-![Aug 2020 System Anomaly](assets/powergrid_ca_aug2020.gif)
-
----
-##### Sept 2022 System Anomaly
-![Sept 2022 System Anomaly](assets/powergrid_ca_sept2022.gif)
+Conclusion:
+- the system reliably detects outages
+- and surfaces broader structural changes and transient system-level disruptions
 
 ---
 
-### SWaT Water Treatment (yy-yy)
+##### Outage -- Aug 2020
+![Outage -- Aug 2020](assets/powergrid_ca_aug2020.gif)
 
-Industrial control system with coordinated cyber-physical attacks.
+---
+##### Outage -- Sept 2022
+![Outage -- Sept 2022](assets/powergrid_ca_sept2022.gif)
 
-#### Status
-in progress
+---
+
+### SWaT Water Treatment Facilities Failure Detection (yy-yy)
+
+#### Overview
+(in progress)
+
+Goal:
+(to be defined) 
+
+Result:
+(to be defined)  
+
+Conclusion:
+(to be defined) 
 
 ##### -- Attack Example
 
@@ -55,29 +68,7 @@ in progress
 ##### -- Attack Example
 
 ---
-##### -- Attack Example
 
----
+## Getting Started
 
-## Quickstart
-
-```bash
-# 1. Generate a usecase config
-python -m htm_monitor.cli.usecase_wizard \
-  --out-dir configs/generated \
-  --spec-out specs/powergrid_ca.build.yaml
-
-# 2. Run pipeline (no plot)
-python -m htm_monitor.cli.run_pipeline \
-  --defaults configs/htm_defaults.yaml \
-  --config configs/generated/powergrid_ca.yaml \
-  --run-dir outputs/powergrid_ca_run \
-  --no-plot
-
-# 3. Analyze results
-python -m htm_monitor.cli.analyze_run \
-  --run-dir outputs/powergrid_ca_run \
-  --config configs/generated/powergrid_ca.yaml
-```
-
-
+See `docs/quickstart.md` for usage instructions.
