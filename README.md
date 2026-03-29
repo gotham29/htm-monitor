@@ -33,7 +33,7 @@ Rule:
 
 ## Use Cases
 
-### Power Grid Outage Detection (2020-22)
+### Power Grid Outage Detection (State of CA, 2020-22)
 
 #### Overview
 Monitoring core grid signals:
