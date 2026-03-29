@@ -1,6 +1,6 @@
 # HTM-Monitor
 
-Detects system-level anomalies in streaming data by requiring sustained agreement across groups of related signals in complex, multi-signal systems such as infrastructure and industrial processes.
+Detects system-level anomalies in streaming data by requiring sustained agreement across groups of related signals in complex systems such as infrastructure and industrial processes.
 
 **Two anomaly types:**
 - **Regime shifts** — sustained structural changes in system behavior
@@ -8,7 +8,7 @@ Detects system-level anomalies in streaming data by requiring sustained agreemen
 
 ## Method
 - one HTM model per signal
-- related signals grouped into functional groups
+- related signals grouped
 - system anomaly requires **group agreement + temporal persistence**
 
 ## Why this works
