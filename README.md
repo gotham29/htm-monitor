@@ -10,16 +10,14 @@ Detects system-level anomalies in streaming data by requiring sustained agreemen
 Each signal is modeled independently and combined via sustained consensus:
 
 ```
-SIGNALS        MODELS            GROUPS            SYSTEM
+SIGNALS         MODELS               GROUPS           SYSTEM
 
 signal_1   ->  [model_1]  ----\
 signal_2   ->  [model_2]  -----+--> [group A] --\
                                       hot?     |
 signal_3   ->  [model_3]  ----\                |
 signal_4   ->  [model_4]  -----+--> [group B] --+--> [anomaly]
-signal_5   ->  [model_5]  ----/       hot?     |
-                                              |
-                                    groups vote
+signal_5   ->  [model_5]  ----/       hot?     |     detected?
 ```
 
 Rule:
