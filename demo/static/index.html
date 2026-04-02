@@ -1,0 +1,1450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>HTM-Monitor</title>
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+<style>
+/* ═══════════════════════════════════════════════════════════════
+   RESET + ROOT
+════════════════════════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #0D1117;
+  --bg2:       #161B22;
+  --bg3:       #21262D;
+  --border:    #30363D;
+  --text:      #E6EDF3;
+  --muted:     #8B949E;
+  --accent:    #58A6FF;
+  --demand:    #58A6FF;   /* blue  — gr_demand */
+  --gen:       #3FB950;   /* green — gr_generation */
+  --imb:       #D29922;   /* amber — gr_imbalance */
+  --alert-red: #F85149;
+  --warn:      #D29922;
+  --gt-pri:    rgba(248,81,73,0.15);
+  --gt-exp:    rgba(88,166,255,0.10);
+  --radius:    8px;
+  --font: 'SF Pro Display', 'Inter', system-ui, -apple-system, sans-serif;
+  --mono: 'SF Mono', 'Fira Code', monospace;
+}
+
+html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
+
+/* ═══════════════════════════════════════════════════════════════
+   SCREENS (login / catalog / replay)
+════════════════════════════════════════════════════════════════ */
+.screen { display: none; width: 100%; height: 100vh; overflow: hidden; }
+.screen.active { display: flex; }
+
+/* ─── LOGIN ──────────────────────────────────────────────────── */
+#login-screen {
+  align-items: center; justify-content: center;
+  background: radial-gradient(ellipse at 50% 40%, #1a2a3a 0%, var(--bg) 70%);
+}
+.login-card {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 16px; padding: 48px 40px; width: 380px;
+  box-shadow: 0 24px 80px rgba(0,0,0,0.6);
+}
+.login-logo { text-align: center; margin-bottom: 32px; }
+.login-logo .wordmark { font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
+.login-logo .wordmark span { color: var(--accent); }
+.login-logo .tagline { color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+.field { margin-bottom: 16px; }
+.field label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+.field input {
+  width: 100%; background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+  border-radius: 6px; padding: 10px 14px; font-size: 14px; outline: none;
+  transition: border-color 0.15s;
+}
+.field input:focus { border-color: var(--accent); }
+
+.btn-primary {
+  width: 100%; padding: 11px; background: var(--accent); color: #0D1117;
+  border: none; border-radius: 6px; font-size: 14px; font-weight: 700;
+  cursor: pointer; transition: opacity 0.15s; margin-top: 8px;
+}
+.btn-primary:hover { opacity: 0.9; }
+.login-error { color: var(--alert-red); font-size: 13px; margin-top: 12px; text-align: center; min-height: 20px; }
+
+/* ─── CATALOG ────────────────────────────────────────────────── */
+#catalog-screen {
+  flex-direction: column;
+  background: radial-gradient(ellipse at 50% 0%, #1a2a3a 0%, var(--bg) 60%);
+}
+.catalog-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 20px 32px; border-bottom: 1px solid var(--border);
+}
+.catalog-header .wordmark { font-size: 18px; font-weight: 700; letter-spacing: -.3px; }
+.catalog-header .wordmark span { color: var(--accent); }
+.btn-logout { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; transition: color 0.15s; }
+.btn-logout:hover { color: var(--text); }
+
+.catalog-body {
+  flex: 1; overflow-y: auto; padding: 48px 32px;
+  display: flex; flex-direction: column; align-items: center;
+}
+.catalog-title { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+.catalog-subtitle { color: var(--muted); margin-bottom: 40px; font-size: 15px; }
+
+.usecase-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 520px)); gap: 24px; width: 100%; max-width: 1100px; }
+
+.usecase-card {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+  overflow: hidden; cursor: pointer; transition: border-color 0.2s, transform 0.15s;
+  display: flex; flex-direction: column;
+}
+.usecase-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.card-header { padding: 24px 24px 0; }
+.card-tag { display: inline-block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--accent); background: rgba(88,166,255,0.1); border-radius: 4px; padding: 3px 8px; margin-bottom: 12px; }
+.card-title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+.card-subtitle { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+.card-desc { font-size: 14px; line-height: 1.6; color: var(--muted); padding: 0 24px 16px; }
+.card-events { padding: 0 24px 16px; display: flex; flex-direction: column; gap: 8px; }
+.card-event { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.event-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.event-dot.primary_gt { background: var(--alert-red); }
+.event-dot.explanatory { background: var(--accent); }
+.card-footer { padding: 16px 24px; border-top: 1px solid var(--border); margin-top: auto; display: flex; justify-content: flex-end; }
+.btn-launch {
+  background: var(--accent); color: #0D1117; border: none; border-radius: 6px;
+  padding: 9px 20px; font-size: 14px; font-weight: 700; cursor: pointer;
+  transition: opacity 0.15s;
+}
+.btn-launch:hover { opacity: 0.9; }
+
+/* Loading state */
+.catalog-loading { color: var(--muted); font-size: 15px; }
+
+/* ─── REPLAY ─────────────────────────────────────────────────── */
+#replay-screen { flex-direction: column; overflow: hidden; }
+
+/* Top bar */
+.replay-topbar {
+  flex-shrink: 0;
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 20px; height: 52px; border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+}
+.replay-topbar .wordmark { font-size: 16px; font-weight: 700; letter-spacing: -.3px; margin-right: 4px; }
+.replay-topbar .wordmark span { color: var(--accent); }
+.topbar-divider { width: 1px; height: 24px; background: var(--border); }
+.topbar-usecase-title { font-size: 14px; font-weight: 600; }
+.topbar-period { font-size: 12px; color: var(--muted); }
+.topbar-spacer { flex: 1; }
+.btn-back { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 5px 12px; cursor: pointer; font-size: 12px; }
+.btn-back:hover { color: var(--text); }
+
+/* Main replay layout */
+.replay-main { flex: 1; display: flex; overflow: hidden; }
+
+/* Sidebar */
+.replay-sidebar {
+  width: 310px; flex-shrink: 0;
+  border-right: 1px solid var(--border); background: var(--bg2);
+  display: flex; flex-direction: column; overflow-y: auto;
+  padding: 18px;
+}
+
+.sidebar-section { margin-bottom: 22px; }
+.sidebar-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 10px; }
+
+/* System alert indicator */
+.system-alert-badge {
+  display: flex; align-items: center; justify-content: center;
+  height: 64px; border-radius: 10px; font-size: 15px; font-weight: 700;
+  letter-spacing: .02em; transition: all 0.3s ease; margin-bottom: 12px;
+  border: 2px solid transparent;
+}
+.system-alert-badge.normal  { background: rgba(139,148,158,0.1); border-color: var(--border); color: var(--muted); }
+.system-alert-badge.alert   { background: rgba(248,81,73,0.15);  border-color: var(--alert-red); color: var(--alert-red); animation: pulse-red 1.2s ease-in-out infinite; }
+@keyframes pulse-red { 0%,100% { box-shadow: 0 0 0 0 rgba(248,81,73,0.3); } 50% { box-shadow: 0 0 0 8px rgba(248,81,73,0); } }
+
+/* Streak counter */
+.streak-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+.streak-val { font-size: 16px; font-weight: 700; color: var(--text); font-family: var(--mono); }
+
+/* Group tiles */
+.group-tiles { display: flex; flex-direction: column; gap: 8px; }
+.group-tile {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg3); transition: all 0.25s ease;
+}
+.group-tile.hot { border-color: currentColor; }
+.group-tile-left { display: flex; align-items: center; gap: 10px; }
+.group-dot { width: 10px; height: 10px; border-radius: 50%; }
+.group-name { font-size: 14px; font-weight: 600; }
+.group-warmth-bar-wrap { flex: 1; margin: 0 10px; height: 4px; background: var(--bg); border-radius: 2px; overflow: hidden; }
+.group-warmth-bar { height: 100%; border-radius: 2px; transition: width 0.3s; }
+.group-status { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+
+/* Events list */
+.event-list { display: flex; flex-direction: column; gap: 8px; }
+.event-item { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); cursor: pointer; transition: border-color 0.15s; }
+.event-item:hover { border-color: var(--accent); }
+.event-item.detected-event { border-color: rgba(63,185,80,0.35); }
+.event-item.detected-event:hover { border-color: #3FB950; }
+.event-item.tier2-event { border-color: rgba(210,153,34,0.35); }
+.event-item.tier2-event:hover { border-color: var(--warn); }
+.event-item-name { font-size: 14px; font-weight: 600; margin-bottom: 3px; }
+.event-item-period { font-size: 12px; color: var(--muted); }
+.event-badge { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; border-radius: 3px; padding: 2px 7px; margin-bottom: 5px; }
+.event-badge.primary_gt  { background: rgba(248,81,73,0.15); color: var(--alert-red); }
+.event-badge.explanatory { background: rgba(88,166,255,0.10); color: var(--accent); }
+.event-outcome { font-size: 12px; font-weight: 700; letter-spacing: .04em; margin-top: 5px; }
+.event-outcome.detected  { color: #3FB950; }
+.event-outcome.tier2     { color: var(--warn); }
+.event-outcome.subthresh { color: var(--muted); }
+
+/* Performance summary strip */
+.perf-strip { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 7px; }
+.perf-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; }
+.perf-label { color: var(--muted); }
+.perf-val { font-weight: 700; font-family: var(--mono); font-size: 13px; }
+.perf-val.good { color: #3FB950; }
+.perf-val.warn { color: var(--warn); }
+.perf-note { font-size: 11px; color: var(--muted); font-style: italic; padding-top: 5px; border-top: 1px solid var(--border); line-height: 1.4; }
+
+/* Current timestamp */
+.ts-display { font-family: var(--mono); font-size: 13px; color: var(--accent); }
+
+/* Playback controls */
+.controls { display: flex; flex-direction: column; gap: 10px; }
+.controls-row { display: flex; align-items: center; gap: 8px; }
+.btn-icon {
+  background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+  border-radius: 6px; width: 36px; height: 36px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; font-size: 16px;
+  transition: background 0.15s; flex-shrink: 0;
+}
+.btn-icon:hover { background: var(--bg); }
+.btn-icon.active { background: var(--accent); color: #0D1117; border-color: var(--accent); }
+
+.speed-select {
+  background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+  border-radius: 6px; padding: 6px 8px; font-size: 12px; cursor: pointer; outline: none;
+}
+
+.scrub-wrap { display: flex; flex-direction: column; gap: 4px; }
+.scrub-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); font-family: var(--mono); }
+#scrub { width: 100%; accent-color: var(--accent); cursor: pointer; }
+
+/* Window size */
+.window-select {
+  background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+  border-radius: 6px; padding: 6px 8px; font-size: 12px; cursor: pointer; outline: none; width: 100%;
+}
+
+/* Chart area */
+.replay-charts { flex: 1; display: flex; flex-direction: column; overflow: hidden; padding: 12px 16px 12px 12px; gap: 10px; }
+
+.chart-panel {
+  flex: 1; display: flex; flex-direction: column;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  overflow: hidden; min-height: 0;
+}
+.chart-panel-header { padding: 8px 14px 0; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+.chart-panel-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.chart-panel-legend { display: flex; gap: 14px; align-items: center; }
+.btn-normalize {
+  font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border);
+  background: transparent; color: var(--muted); cursor: pointer; transition: all .15s;
+}
+.btn-normalize:hover { border-color: var(--accent); color: var(--accent); }
+.btn-normalize.active { background: var(--accent); border-color: var(--accent); color: #0D1117; }
+
+/* Anomaly chart view toggle */
+.chart-view-tabs { display: flex; gap: 4px; }
+.chart-view-tab {
+  font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border);
+  background: transparent; color: var(--muted); cursor: pointer; transition: all .15s;
+}
+.chart-view-tab:hover { border-color: var(--accent); color: var(--accent); }
+.chart-view-tab.active { background: var(--bg3); border-color: var(--accent); color: var(--text); }
+.legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+.chart-div { flex: 1; min-height: 0; }
+
+/* Warmup overlay message */
+#warmup-notice {
+  position: fixed; bottom: 24px; right: 24px;
+  background: var(--bg2); border: 1px solid var(--warn); color: var(--warn);
+  border-radius: 8px; padding: 12px 16px; font-size: 13px;
+  display: none; z-index: 100;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+}
+
+/* Tooltip / info overlay */
+.info-overlay {
+  position: fixed; bottom: 24px; left: 320px;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 16px 20px; font-size: 13px; line-height: 1.6;
+  max-width: 460px; display: none; z-index: 100;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+  transition: opacity 0.3s;
+}
+.info-overlay-title { font-weight: 700; font-size: 14px; margin-bottom: 10px; color: var(--text); }
+.info-overlay-body { color: var(--muted); }
+.info-overlay-body p { margin: 0; }
+.info-overlay-close { float: right; cursor: pointer; color: var(--muted); font-size: 16px; line-height: 1; margin-top: -2px; }
+
+/* Loading spinner */
+.spinner {
+  display: inline-block; width: 20px; height: 20px;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.loading-overlay {
+  position: absolute; inset: 0; background: rgba(13,17,23,0.85);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 16px; font-size: 15px; color: var(--muted); z-index: 200; border-radius: 8px;
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     LOGIN SCREEN
+════════════════════════════════════════════════════════════════ -->
+<div class="screen active" id="login-screen">
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="wordmark">HTM<span>-Monitor</span></div>
+      <div class="tagline">Multi-signal anomaly detection</div>
+    </div>
+    <form id="login-form" autocomplete="off">
+      <div class="field">
+        <label>Username</label>
+        <input type="text" id="login-user" autocomplete="username" required/>
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="password" id="login-pass" autocomplete="current-password" required/>
+      </div>
+      <button class="btn-primary" type="submit" id="login-btn">Sign in</button>
+      <div class="login-error" id="login-error"></div>
+    </form>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     CATALOG SCREEN
+════════════════════════════════════════════════════════════════ -->
+<div class="screen" id="catalog-screen">
+  <div class="catalog-header">
+    <div class="wordmark">HTM<span>-Monitor</span></div>
+    <button class="btn-logout" id="logout-btn">Sign out</button>
+  </div>
+  <div class="catalog-body">
+    <div class="catalog-title">Monitoring Scenarios</div>
+    <div class="catalog-subtitle">Select a use case to launch the live replay viewer</div>
+    <div class="usecase-grid" id="usecase-grid">
+      <div class="catalog-loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     REPLAY SCREEN
+════════════════════════════════════════════════════════════════ -->
+<div class="screen" id="replay-screen">
+  <!-- Top bar -->
+  <div class="replay-topbar">
+    <div class="wordmark">HTM<span>-Monitor</span></div>
+    <div class="topbar-divider"></div>
+    <div>
+      <div class="topbar-usecase-title" id="topbar-title">—</div>
+      <div class="topbar-period" id="topbar-period">—</div>
+    </div>
+    <div class="topbar-spacer"></div>
+    <button class="btn-back" id="back-btn">← Scenarios</button>
+  </div>
+
+  <div class="replay-main">
+    <!-- Sidebar -->
+    <div class="replay-sidebar">
+
+      <!-- System alert -->
+      <div class="sidebar-section">
+        <div class="sidebar-label">System Status</div>
+        <div class="system-alert-badge normal" id="alert-badge">● MONITORING</div>
+        <div class="streak-row" id="streak-row" style="display:none">
+          <span>Alert duration</span>
+          <span class="streak-val" id="streak-val">0</span>
+        </div>
+      </div>
+
+      <!-- Performance summary (populated by JS if meta.eval_stats present) -->
+      <div class="sidebar-section" id="perf-section" style="display:none">
+        <div class="sidebar-label">Detection Performance</div>
+        <div class="perf-strip" id="perf-strip"><!-- filled by JS --></div>
+      </div>
+
+      <!-- Groups -->
+      <div class="sidebar-section">
+        <div class="sidebar-label">Signal Groups</div>
+        <div class="group-tiles" id="group-tiles"><!-- filled by JS --></div>
+      </div>
+
+      <!-- Events -->
+      <div class="sidebar-section">
+        <div class="sidebar-label">Known Events</div>
+        <div class="event-list" id="event-list"><!-- filled by JS --></div>
+      </div>
+
+      <!-- Timestamp -->
+      <div class="sidebar-section">
+        <div class="sidebar-label">Current Time</div>
+        <div class="ts-display" id="ts-display">—</div>
+      </div>
+
+      <!-- Controls -->
+      <div class="sidebar-section" style="margin-top: auto;">
+        <div class="sidebar-label">Playback</div>
+        <div class="controls">
+          <div class="controls-row">
+            <button class="btn-icon" id="btn-rewind" title="Rewind to start">⏮</button>
+            <button class="btn-icon" id="btn-play"   title="Play / Pause">▶</button>
+            <button class="btn-icon" id="btn-step"   title="Step forward">⏭</button>
+            <select class="speed-select" id="speed-select">
+              <option value="0.5">0.5×</option>
+              <option value="1" selected>1×</option>
+              <option value="2">2×</option>
+              <option value="5">5×</option>
+              <option value="20">20×</option>
+            </select>
+          </div>
+          <div class="scrub-wrap">
+            <input type="range" id="scrub" min="0" max="1000" value="0"/>
+            <div class="scrub-labels">
+              <span id="scrub-start">—</span>
+              <span id="scrub-end">—</span>
+            </div>
+          </div>
+          <div>
+            <div class="sidebar-label" style="margin-bottom:6px;">Window</div>
+            <select class="window-select" id="window-select">
+              <option value="168">7 days</option>
+              <option value="336" selected>14 days</option>
+              <option value="720">30 days</option>
+              <option value="2160">90 days</option>
+              <option value="0">All data</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Charts -->
+    <div class="replay-charts" id="replay-charts">
+
+      <!-- Signal traces -->
+      <div class="chart-panel" id="panel-signals">
+        <div class="chart-panel-header">
+          <div class="chart-panel-title">Signal Traces</div>
+          <div class="chart-panel-legend" id="legend-signals">
+            <button class="btn-normalize" id="btn-normalize" title="Toggle z-score normalisation">Normalize</button>
+          </div>
+        </div>
+        <div class="chart-div" id="chart-signals"></div>
+      </div>
+
+      <!-- Detection layers chart -->
+      <div class="chart-panel" id="panel-anomaly">
+        <div class="chart-panel-header">
+          <div class="chart-panel-title" id="anomaly-chart-title">Group Warmth</div>
+          <div class="chart-panel-legend" id="legend-anomaly">
+            <div class="chart-view-tabs">
+              <button class="chart-view-tab active" id="tab-warmth" title="Show group consensus warmth — the key signal for each tier">Group Warmth</button>
+              <button class="chart-view-tab" id="tab-scores" title="Show raw per-model anomaly probability scores">Model Scores</button>
+            </div>
+          </div>
+        </div>
+        <div class="chart-div" id="chart-anomaly"></div>
+      </div>
+
+    </div><!-- /replay-charts -->
+  </div><!-- /replay-main -->
+</div><!-- /replay-screen -->
+
+<!-- Warmup notice -->
+<div id="warmup-notice">⚠ Learning period — model is warming up, alerts suppressed</div>
+
+<!-- Info overlay (event tooltip) -->
+<div class="info-overlay" id="info-overlay">
+  <span class="info-overlay-close" id="info-close">✕</span>
+  <div class="info-overlay-title" id="info-title"></div>
+  <div class="info-overlay-body" id="info-body"></div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+   STATE
+════════════════════════════════════════════════════════════════ */
+const App = {
+  currentScreen: 'login',
+  usecases: [],
+  activeUsecase: null,   // full data object
+  meta: null,
+  data: null,
+
+  // playback
+  cursor: 0,             // current step index into data arrays
+  playing: false,
+  speedMult: 1,
+  windowSize: 336,       // steps visible
+  frameInterval: null,
+  stepsPerFrame: 1,
+
+  // signal chart
+  normalizeSignals: false,
+  normStats: null,       // {signal_name: {mean, std}} computed at load time
+  frameMs: 100,          // target ms between frames at 1×
+
+  // chart refs
+  signalsInited: false,
+  anomalyInited: false,
+
+  // anomaly chart view: 'warmth' (group warmth default) or 'scores' (raw model p)
+  anomalyView: 'warmth',
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   ROUTING
+════════════════════════════════════════════════════════════════ */
+function showScreen(name) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(name + '-screen').classList.add('active');
+  App.currentScreen = name;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   LOGIN
+════════════════════════════════════════════════════════════════ */
+document.getElementById('login-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = document.getElementById('login-btn');
+  const err = document.getElementById('login-error');
+  const user = document.getElementById('login-user').value.trim();
+  const pass = document.getElementById('login-pass').value;
+  btn.textContent = 'Signing in…';
+  btn.disabled = true;
+  err.textContent = '';
+  try {
+    const r = await fetch('/auth/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({username: user, password: pass}),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      err.textContent = d.detail || 'Invalid credentials.';
+      return;
+    }
+    showScreen('catalog');
+    loadCatalog();
+  } catch(ex) {
+    err.textContent = 'Server unreachable. Is the server running?';
+  } finally {
+    btn.textContent = 'Sign in';
+    btn.disabled = false;
+  }
+});
+
+/* Check session on load */
+(async () => {
+  try {
+    const r = await fetch('/auth/me');
+    if (r.ok) {
+      showScreen('catalog');
+      loadCatalog();
+    }
+  } catch(e) {}
+})();
+
+/* ═══════════════════════════════════════════════════════════════
+   LOGOUT
+════════════════════════════════════════════════════════════════ */
+document.getElementById('logout-btn').addEventListener('click', async () => {
+  await fetch('/auth/logout', {method: 'POST'});
+  showScreen('login');
+});
+
+/* ═══════════════════════════════════════════════════════════════
+   CATALOG
+════════════════════════════════════════════════════════════════ */
+async function loadCatalog() {
+  const grid = document.getElementById('usecase-grid');
+  grid.innerHTML = '<div class="catalog-loading"><div class="spinner"></div></div>';
+  try {
+    const r = await fetch('/api/usecases');
+    if (!r.ok) throw new Error('Failed to load use cases');
+    const usecases = await r.json();
+    App.usecases = usecases;
+    renderCatalog(usecases);
+  } catch(e) {
+    grid.innerHTML = `<div class="catalog-loading" style="color:var(--alert-red)">${e.message}</div>`;
+  }
+}
+
+function renderCatalog(usecases) {
+  const grid = document.getElementById('usecase-grid');
+  if (!usecases.length) {
+    grid.innerHTML = '<div class="catalog-loading">No scenarios found. Run build_demo_data.py first.</div>';
+    return;
+  }
+  grid.innerHTML = usecases.map(uc => `
+    <div class="usecase-card" data-id="${uc.id}">
+      <div class="card-header">
+        <div class="card-tag">Live Replay</div>
+        <div class="card-title">${esc(uc.title)}</div>
+        <div class="card-subtitle">${esc(uc.subtitle || '')}</div>
+      </div>
+      <div class="card-desc">${esc(uc.description || '')}</div>
+      <div class="card-events">
+        ${(uc.events || []).map(ev => `
+          <div class="card-event">
+            <div class="event-dot ${ev.kind}"></div>
+            <span>${esc(ev.label)}</span>
+          </div>
+        `).join('')}
+      </div>
+      <div class="card-footer">
+        <button class="btn-launch">Launch Replay →</button>
+      </div>
+    </div>
+  `).join('');
+
+  grid.querySelectorAll('.usecase-card').forEach(card => {
+    card.addEventListener('click', () => launchReplay(card.dataset.id));
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   LAUNCH REPLAY
+════════════════════════════════════════════════════════════════ */
+async function launchReplay(id) {
+  showScreen('replay');
+
+  // Show loading overlay over charts
+  const chartsEl = document.getElementById('replay-charts');
+  const overlay = document.createElement('div');
+  overlay.className = 'loading-overlay';
+  overlay.innerHTML = '<div class="spinner"></div><div>Loading scenario data…</div>';
+  chartsEl.style.position = 'relative';
+  chartsEl.appendChild(overlay);
+
+  try {
+    const r = await fetch(`/api/usecases/${id}/data`);
+    if (!r.ok) throw new Error('Failed to load data');
+    const doc = await r.json();
+    App.meta = doc.meta;
+    App.data = doc.data;
+    App.activeUsecase = id;
+    App.cursor = App.meta.warmup_end_t + 1;  // start after warmup
+    App.playing = false;
+    App.signalsInited = false;
+    App.anomalyInited = false;
+
+    // Update topbar
+    document.getElementById('topbar-title').textContent = App.meta.title;
+    document.getElementById('topbar-period').textContent =
+      `${fmtDate(App.meta.time_range.start)} → ${fmtDate(App.meta.time_range.end)}`;
+
+    // Scrubber range (post-warmup only)
+    const scrub = document.getElementById('scrub');
+    scrub.min = App.meta.warmup_end_t + 1;
+    scrub.max = App.meta.total_steps - 1;
+    scrub.value = App.cursor;
+    document.getElementById('scrub-start').textContent = fmtDate(App.meta.time_range.start);
+    document.getElementById('scrub-end').textContent   = fmtDate(App.meta.time_range.end);
+
+    // Build sidebar UI
+    buildPerfStrip();
+    buildGroupTiles();
+    buildEventList();
+
+    // Build charts
+    initCharts();
+    overlay.remove();
+
+    // Render initial frame
+    renderFrame();
+
+  } catch(e) {
+    overlay.innerHTML = `<div style="color:var(--alert-red)">${e.message}</div>`;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SIDEBAR UI
+════════════════════════════════════════════════════════════════ */
+function buildPerfStrip() {
+  const stats = App.meta.eval_stats;
+  if (!stats) return;
+  const section = document.getElementById('perf-section');
+  const strip   = document.getElementById('perf-strip');
+  section.style.display = '';
+
+  // Support both eval_months and eval_years
+  const evalPeriod = stats.eval_months != null
+    ? `${stats.eval_months} months`
+    : stats.eval_years != null
+    ? `${stats.eval_years} years`
+    : '—';
+
+  // GT denominator: use primary_gt_events if present, else all events
+  const primaryGtEvents = stats.primary_gt_events != null
+    ? stats.primary_gt_events
+    : (App.meta.events || []).filter(e => e.kind === 'primary_gt' || e.tier != null).length;
+
+  // Unconfirmed alerts: use explicit field or derive
+  const unconfirmed = stats.unconfirmed_alerts != null
+    ? stats.unconfirmed_alerts
+    : (stats.system_alerts - stats.true_positives);
+  const fpClass = unconfirmed === 0 ? 'good' : 'warn';
+
+  // Tier 1 row value
+  const tier1Val = `${stats.true_positives} / ${primaryGtEvents} events`;
+  const tier1Class = stats.true_positives >= primaryGtEvents ? 'good' : 'warn';
+
+  // Tier 2 row
+  const tier2Detected = stats.group_alerts_detected;
+  const tier2Val = tier2Detected != null
+    ? `${tier2Detected} / ${primaryGtEvents} events`
+    : '—';
+
+  strip.innerHTML = `
+    <div class="perf-row">
+      <span class="perf-label">Evaluation period</span>
+      <span class="perf-val">${evalPeriod}</span>
+    </div>
+    <div class="perf-row">
+      <span class="perf-label">System alerts fired</span>
+      <span class="perf-val">${stats.system_alerts}</span>
+    </div>
+    <div class="perf-row">
+      <span class="perf-label">Confirmed (true positive)</span>
+      <span class="perf-val good">${stats.true_positives}</span>
+    </div>
+    <div class="perf-row">
+      <span class="perf-label">Unconfirmed / borderline</span>
+      <span class="perf-val ${fpClass}">${unconfirmed}${unconfirmed > 0 ? ' ⚠' : ''}</span>
+    </div>
+    <div class="perf-row" style="margin-top:4px;padding-top:5px;border-top:1px solid var(--border)">
+      <span class="perf-label" style="color:var(--text);font-weight:600">Tier 1 — System alert</span>
+      <span class="perf-val ${tier1Class}">${tier1Val}</span>
+    </div>
+    <div class="perf-row">
+      <span class="perf-label" style="color:var(--text);font-weight:600">Tier 2 — Group alert</span>
+      <span class="perf-val warn">${tier2Val}</span>
+    </div>
+    ${stats.recall_note ? `<div class="perf-note">${stats.recall_note}</div>` : ''}
+    ${stats.fp_note ? `<div class="perf-note" style="margin-top:4px">${stats.fp_note}</div>` : ''}
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ANOMALY CHART — two-view system (Group Warmth / Model Scores)
+════════════════════════════════════════════════════════════════ */
+function buildGroupAlertShapes() {
+  // Amber bands: any group is hot but system alert is NOT firing.
+  // These represent Tier-2 detections — single-group consensus events
+  // that didn't reach cross-group threshold.
+  const meta = App.meta;
+  const data = App.data;
+  const ts = data.timestamps;
+  const sysAlert = data.system.alert;
+  const shapes = [];
+  // Aggregate across all groups: any_group_hot[i] = any group has hot=1
+  const anyGroupHot = ts.map((_, i) =>
+    meta.groups.some(g => data.groups[g.name].hot[i])
+  );
+  let inBand = false, start = null;
+  for (let i = 0; i < anyGroupHot.length; i++) {
+    const isGroupOnly = anyGroupHot[i] && !sysAlert[i];
+    if (isGroupOnly && !inBand) { inBand = true; start = ts[i]; }
+    if (!isGroupOnly && inBand) {
+      shapes.push({
+        type: 'rect', xref: 'x', yref: 'paper',
+        x0: start, x1: ts[i-1], y0: 0, y1: 1,
+        fillcolor: 'rgba(210,153,34,0.18)',
+        line: { color: 'rgba(210,153,34,0.5)', width: 1.2 }, layer: 'above',
+      });
+      inBand = false;
+    }
+  }
+  if (inBand && start) shapes.push({
+    type: 'rect', xref: 'x', yref: 'paper',
+    x0: start, x1: ts[ts.length-1], y0: 0, y1: 1,
+    fillcolor: 'rgba(210,153,34,0.18)',
+    line: { color: 'rgba(210,153,34,0.5)', width: 1.2 }, layer: 'above',
+  });
+  return shapes;
+}
+
+function buildGroupWarmthTraces() {
+  const meta = App.meta;
+  const data = App.data;
+  const ts = data.timestamps;
+  return meta.groups.map(g => ({
+    x: ts, y: data.groups[g.name].warmth,
+    type: 'scatter', mode: 'lines',
+    name: g.label,
+    line: { color: g.color, width: 2.5 },
+    fill: 'tozeroy',
+    fillcolor: g.color + '18',  // ~10% opacity fill for readability
+    hovertemplate: `<b>${g.label}</b><br>warmth: %{y:.3f}<extra></extra>`,
+  }));
+}
+
+function buildModelScoreTraces() {
+  const meta = App.meta;
+  const data = App.data;
+  const ts = data.timestamps;
+  const traces = meta.models.map(m => ({
+    x: ts, y: data.models[m.name].p,
+    type: 'scatter', mode: 'lines',
+    name: m.label, line: { color: groupColor(m.group), width: 1.2 },
+    hovertemplate: `<b>${m.label}</b> p: %{y:.3f}<extra></extra>`,
+  }));
+  const thresh = meta.threshold || 0.985;
+  traces.push({
+    x: [ts[0], ts[ts.length-1]], y: [thresh, thresh],
+    type: 'scatter', mode: 'lines', name: `Threshold (${thresh})`,
+    line: { color: '#E6EDF3', width: 1.5, dash: 'dot' },
+    hoverinfo: 'skip',
+  });
+  return traces;
+}
+
+function initAnomChart() {
+  const meta = App.meta;
+  const data = App.data;
+  const ts = data.timestamps;
+
+  const isWarmth = App.anomalyView === 'warmth';
+  const traces   = isWarmth ? buildGroupWarmthTraces() : buildModelScoreTraces();
+  const yTitle   = isWarmth ? 'warmth' : 'p';
+  const yRange   = [0, isWarmth ? 0.70 : 1.05];
+
+  // Update chart title text
+  const titleEl = document.getElementById('anomaly-chart-title');
+  if (titleEl) titleEl.textContent = isWarmth ? 'Group Warmth' : 'Model Scores (p)';
+
+  const eventShapes      = buildEventShapes(ts);
+  const alertShapes      = buildAlertShapes(ts, data.system.alert);
+  const groupAlertShapes = buildGroupAlertShapes();
+  const alertAnnotations = buildAlertAnnotations(ts, data.system.alert);
+
+  const anomLayout = Object.assign({}, PLOTLY_LAYOUT_BASE, {
+    shapes: [...eventShapes, ...groupAlertShapes, ...alertShapes],
+    annotations: alertAnnotations,
+    yaxis: { ...PLOTLY_LAYOUT_BASE.yaxis, range: yRange, title: { text: yTitle, font:{size:10} } },
+    showlegend: false,
+  });
+
+  App.anomalyInited = false;
+  Plotly.newPlot('chart-anomaly', traces, anomLayout, {responsive: true, displayModeBar: false});
+  App.anomalyInited = true;
+
+  // Build legend in header
+  const legAnom = document.getElementById('legend-anomaly');
+  // preserve the tab buttons, only replace legend dots before them
+  const existingDots = legAnom.querySelectorAll('.legend-item');
+  existingDots.forEach(el => el.remove());
+  // no extra legend items needed — tab buttons serve as legend context
+}
+
+function switchAnomView(view) {
+  if (App.anomalyView === view) return;
+  App.anomalyView = view;
+  // Update tab UI
+  document.getElementById('tab-warmth').classList.toggle('active', view === 'warmth');
+  document.getElementById('tab-scores').classList.toggle('active', view === 'scores');
+  // Re-init the chart with new traces
+  initAnomChart();
+  // Re-apply current x-range
+  const ts = App.data.timestamps;
+  const cur = App.cursor;
+  const win = App.windowSize;
+  const xStart = win > 0 ? ts[Math.max(0, cur - win)] : ts[App.meta.warmup_end_t + 1];
+  const xEnd   = ts[Math.min(cur, ts.length - 1)];
+  Plotly.relayout('chart-anomaly', { 'xaxis.range': [xStart, xEnd] });
+}
+
+function buildGroupTiles() {
+  const groups = App.meta.groups;
+  const el = document.getElementById('group-tiles');
+  el.innerHTML = groups.map(g => `
+    <div class="group-tile" id="tile-${g.name}" style="color:${g.color}">
+      <div class="group-tile-left">
+        <div class="group-dot" style="background:${g.color}"></div>
+        <div class="group-name">${esc(g.label)}</div>
+      </div>
+      <div class="group-warmth-bar-wrap">
+        <div class="group-warmth-bar" id="warmth-bar-${g.name}" style="background:${g.color};width:0%"></div>
+      </div>
+      <div class="group-status" id="status-${g.name}">COLD</div>
+    </div>
+  `).join('');
+}
+
+function buildEventList() {
+  const events = App.meta.events || [];
+  const el = document.getElementById('event-list');
+  el.innerHTML = events.map((ev, i) => {
+    const eventTypeName = App.meta.event_type_label || 'Event';
+    const kindLabel = ev.kind === 'primary_gt' ? `Known ${eventTypeName}` : 'Contextual';
+    // Three-tier outcome rendering
+    let outcomeHtml = '';
+    if (ev.tier === 1) {
+      outcomeHtml = `<div class="event-outcome detected">⚡ Tier 1 — System Alert · ${ev.detection_lag_h}h lag</div>`;
+    } else if (ev.tier === 2) {
+      outcomeHtml = `<div class="event-outcome tier2">⚠ Tier 2 — Group Alert only</div>`;
+    } else if (ev.detected !== undefined) {
+      outcomeHtml = `<div class="event-outcome subthresh">— Below both thresholds</div>`;
+    }
+    const itemClass = ev.tier === 1 ? ' detected-event' : (ev.tier === 2 ? ' tier2-event' : '');
+    return `
+    <div class="event-item${itemClass}" data-idx="${i}">
+      <div class="event-badge ${ev.kind}">${kindLabel}</div>
+      <div class="event-item-name">${esc(ev.label)}</div>
+      <div class="event-item-period">${fmtDate(ev.start)} – ${fmtDate(ev.end)}</div>
+      ${outcomeHtml}
+    </div>`;
+  }).join('');
+
+  el.querySelectorAll('.event-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const ev = events[+item.dataset.idx];
+      jumpToEvent(ev);
+    });
+  });
+}
+
+function jumpToEvent(ev) {
+  // The cursor is the RIGHT EDGE of the chart window [cursor-win, cursor].
+  // To show the event start at ~25% from the left, we need:
+  //   cursor = event_start_idx + 0.75 * windowSize
+  // giving ~25% pre-event context and making the event band immediately visible.
+  const ts = App.data.timestamps;
+  const targetTs = ev.start;
+  let startIdx = ts.findIndex(t => t >= targetTs);
+  if (startIdx < 0) startIdx = ts.length - 1;
+  let idx = startIdx + Math.floor(App.windowSize * 0.75);
+  idx = Math.min(ts.length - 1, Math.max(App.meta.warmup_end_t + 1, idx));
+  App.cursor = idx;
+  stopPlayback();
+  renderFrame();
+  updateScrubber();
+
+  // Show info overlay
+  const evTypeName = (App.meta.event_type_label || 'event').toLowerCase();
+  document.getElementById('info-title').textContent = ev.label;
+
+  const parts = [];
+  if (ev.description) parts.push(`<p style="margin-bottom:8px">${esc(ev.description)}</p>`);
+
+  if (ev.tier === 1) {
+    const groups = (ev.detected_by_groups || []).join(', ');
+    parts.push(`<p style="color:#3FB950;font-weight:700;margin-bottom:4px">⚡ Tier 1 — System Alert</p>`);
+    parts.push(`<p style="color:var(--muted);font-size:12px">Detected ${ev.detection_lag_h}h into the ${evTypeName} window · cross-group consensus via: ${groups}</p>`);
+    if (ev.group_alert_note) {
+      parts.push(`<p style="color:var(--muted);font-size:12px;margin-top:6px">${esc(ev.group_alert_note)}</p>`);
+    }
+  } else if (ev.tier === 2) {
+    parts.push(`<p style="color:var(--warn);font-weight:700;margin-bottom:4px">⚠ Tier 2 — Group Alert only</p>`);
+    if (ev.group_alert_groups) {
+      parts.push(`<p style="color:var(--muted);font-size:12px">Single-group consensus reached by: ${ev.group_alert_groups.join(', ')}</p>`);
+    }
+    if (ev.group_alert_note) {
+      parts.push(`<p style="color:var(--muted);font-size:12px;margin-top:4px">${esc(ev.group_alert_note)}</p>`);
+    }
+    if (ev.miss_reason) {
+      parts.push(`<p style="color:var(--muted);font-size:12px;margin-top:6px;font-style:italic">${esc(ev.miss_reason)}</p>`);
+    }
+  } else if (ev.detected === false) {
+    parts.push(`<p style="color:var(--muted);font-weight:700;margin-bottom:4px">— Below both thresholds</p>`);
+    if (ev.group_alert_note) {
+      parts.push(`<p style="color:var(--muted);font-size:12px">${esc(ev.group_alert_note)}</p>`);
+    }
+  }
+
+  document.getElementById('info-body').innerHTML = parts.join('');
+  document.getElementById('info-overlay').style.display = 'block';
+}
+
+document.getElementById('info-close').addEventListener('click', () => {
+  document.getElementById('info-overlay').style.display = 'none';
+});
+
+/* ═══════════════════════════════════════════════════════════════
+   PLOTLY CHARTS
+════════════════════════════════════════════════════════════════ */
+const PLOTLY_LAYOUT_BASE = {
+  paper_bgcolor: 'rgba(0,0,0,0)',
+  plot_bgcolor:  'rgba(0,0,0,0)',
+  font: { family: 'SF Pro Display, Inter, system-ui', color: '#8B949E', size: 11 },
+  margin: { l: 60, r: 16, t: 8, b: 36 },
+  xaxis: {
+    type: 'date', color: '#8B949E',
+    gridcolor: '#21262D', zeroline: false, showline: false,
+    tickformat: '%b %d\n%Y',
+  },
+  yaxis: { color: '#8B949E', gridcolor: '#21262D', zeroline: false, showline: false },
+  showlegend: false,
+  hovermode: 'x unified',
+  hoverlabel: { bgcolor: '#21262D', bordercolor: '#30363D', font: {color: '#E6EDF3'} },
+};
+
+function groupColor(groupName) {
+  const g = (App.meta.groups || []).find(g => g.name === groupName);
+  return g ? g.color : '#8B949E';
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SIGNAL CHART RENDERER — handles both raw and normalized modes
+════════════════════════════════════════════════════════════════ */
+const MAX_YAXES = 2;
+const YAXIS_KEYS = ['y', 'y2', 'y3', 'y4'];
+const YAXIS_SIDES = ['left', 'right', 'left', 'right'];
+
+function zScoreArray(arr, mean, std) {
+  return arr.map(v => v === null ? null : (v - mean) / std);
+}
+
+function renderSigChart(shapes, annotations) {
+  const meta = App.meta;
+  const data = App.data;
+  const ts   = data.timestamps;
+  const norm = App.normalizeSignals || App.forceNormalize;
+
+  let traces, layout;
+
+  if (norm) {
+    // ── Normalized mode: z-score all signals onto one shared axis ──
+    traces = meta.signals.map(sig => ({
+      x: ts,
+      y: zScoreArray(data.signals[sig.name], App.normStats[sig.name].mean, App.normStats[sig.name].std),
+      type: 'scatter', mode: 'lines',
+      name: sig.label, line: { color: groupColor(sig.group), width: 1.5 },
+      yaxis: 'y',
+      hovertemplate: `<b>${sig.label}</b>: %{y:.2f}σ<extra></extra>`,
+    }));
+    layout = Object.assign({}, PLOTLY_LAYOUT_BASE, {
+      shapes, annotations,
+      margin: { l: 55, r: 16, t: 8, b: 36 },
+      yaxis: { ...PLOTLY_LAYOUT_BASE.yaxis, title: { text: 'σ (z-score)', font: {size:10} }, zeroline: true, zerolinecolor: '#30363D' },
+      showlegend: true,
+      legend: { orientation: 'h', y: -0.15, font: {size: 10} },
+    });
+
+  } else {
+    // ── Raw mode: data-driven multi-axis from yaxis_group ──────────
+    // Determine unit label per axis group (use unit of first signal in group)
+    const axisUnitMap = {};
+    const axisLabelMap = {};
+    for (const sig of meta.signals) {
+      const g = sig.yaxis_group || 0;
+      if (!(g in axisUnitMap)) {
+        axisUnitMap[g] = sig.unit || '';
+        axisLabelMap[g] = sig.unit || '';
+      }
+      // If group has multiple signals with different units, fall back to generic label
+      else if (axisUnitMap[g] !== sig.unit) {
+        axisLabelMap[g] = 'value';
+      }
+    }
+
+    traces = meta.signals.map(sig => ({
+      x: ts,
+      y: data.signals[sig.name],
+      type: 'scatter', mode: 'lines',
+      name: sig.label, line: { color: groupColor(sig.group), width: 1.5 },
+      yaxis: YAXIS_KEYS[Math.min(sig.yaxis_group || 0, MAX_YAXES - 1)],
+      hovertemplate: `<b>${sig.label}</b>: %{y:.1f} ${sig.unit || ''}<extra></extra>`,
+    }));
+
+    // Build layout — always configure yaxis, conditionally add yaxis2
+    const nGroups = Math.min(Math.max(...meta.signals.map(s => s.yaxis_group || 0)) + 1, MAX_YAXES);
+    const rightMargin = nGroups > 1 ? 64 : 16;
+
+    layout = Object.assign({}, PLOTLY_LAYOUT_BASE, {
+      shapes, annotations,
+      margin: { l: 60, r: rightMargin, t: 8, b: 36 },
+      yaxis: { ...PLOTLY_LAYOUT_BASE.yaxis, title: { text: axisLabelMap[0] || '', font: {size:10} } },
+      showlegend: true,
+      legend: { orientation: 'h', y: -0.15, font: {size: 10} },
+    });
+
+    if (nGroups > 1) {
+      layout.yaxis2 = {
+        overlaying: 'y', side: 'right',
+        color: '#8B949E', showline: false,
+        gridcolor: 'rgba(0,0,0,0)',
+        zeroline: true, zerolinecolor: '#30363D', zerolinewidth: 1,
+        title: { text: axisLabelMap[1] || '', font: {size:10} },
+      };
+    }
+  }
+
+  Plotly.newPlot('chart-signals', traces, layout, {responsive: true, displayModeBar: false});
+  App.signalsInited = true;
+}
+
+function initCharts() {
+  const meta = App.meta;
+  const data = App.data;
+  const ts   = data.timestamps;
+
+  // ── Precompute z-score stats for normalize toggle ─────────────
+  App.normStats = {};
+  for (const sig of meta.signals) {
+    const vals = data.signals[sig.name].filter(v => v !== null);
+    const mean = vals.reduce((a, b) => a + b, 0) / (vals.length || 1);
+    const variance = vals.reduce((a, b) => a + (b - mean) ** 2, 0) / (vals.length || 1);
+    App.normStats[sig.name] = { mean, std: Math.sqrt(variance) || 1 };
+  }
+
+  // ── Build y-axis map from data-driven yaxis_group ─────────────
+  // build_demo_data.py clusters signals by order-of-magnitude into groups
+  // (0 = largest scale, 1 = next, …). We support up to MAX_YAXES explicit
+  // axes; any use-case that needs more gets the normalize toggle forced on.
+  const MAX_YAXES = 2;
+  const YAXIS_KEYS = ['y', 'y2', 'y3', 'y4'];
+  const nAxisGroups = Math.max(...meta.signals.map(s => (s.yaxis_group || 0))) + 1;
+  App.forceNormalize = nAxisGroups > MAX_YAXES;
+
+  // Event shapes (shared between raw + normalized layouts)
+  const shapes = buildEventShapes(ts);
+  const annotations = buildEventAnnotations(ts);
+  renderSigChart(shapes, annotations);
+
+  // Build group legend items, keeping the normalize button in place
+  const legEl = document.getElementById('legend-signals');
+  const normBtn = document.getElementById('btn-normalize');
+  // Insert group dots before the button
+  meta.groups.forEach(g => {
+    const item = document.createElement('div');
+    item.className = 'legend-item';
+    item.innerHTML = `<div class="legend-dot" style="background:${g.color}"></div>${esc(g.label)}`;
+    legEl.insertBefore(item, normBtn);
+  });
+  if (App.forceNormalize) {
+    // Too many scale groups — normalize is the only sensible view
+    App.normalizeSignals = true;
+    normBtn.classList.add('active');
+    normBtn.title = 'Multiple scale groups detected — normalize is active';
+  }
+
+  // ── Anomaly chart ─────────────────────────────────────────────
+  initAnomChart();
+
+  // Wire the tab toggle buttons
+  document.getElementById('tab-warmth').addEventListener('click', () => switchAnomView('warmth'));
+  document.getElementById('tab-scores').addEventListener('click', () => switchAnomView('scores'));
+
+  // signalsInited is set inside renderSigChart()
+  // anomalyInited is set inside initAnomChart()
+}
+
+function buildEventShapes(ts) {
+  const events = App.meta.events || [];
+  const shapes = [];
+  events.forEach(ev => {
+    // Filled background
+    shapes.push({
+      type: 'rect', xref: 'x', yref: 'paper',
+      x0: ev.start, x1: ev.end, y0: 0, y1: 1,
+      fillcolor: ev.kind === 'primary_gt' ? 'rgba(248,81,73,0.13)' : 'rgba(88,166,255,0.09)',
+      line: { width: 0 },
+      layer: 'below',
+    });
+    // Left-edge marker line for crisp visual anchoring
+    shapes.push({
+      type: 'line', xref: 'x', yref: 'paper',
+      x0: ev.start, x1: ev.start, y0: 0, y1: 1,
+      line: {
+        color: ev.kind === 'primary_gt' ? 'rgba(248,81,73,0.6)' : 'rgba(88,166,255,0.5)',
+        width: 1.5, dash: 'dot',
+      },
+      layer: 'above',
+    });
+  });
+  return shapes;
+}
+
+function buildEventAnnotations(ts) {
+  const events = App.meta.events || [];
+  return events.map(ev => ({
+    x: ev.start, xref: 'x', yref: 'paper', y: 1,
+    text: ev.label, showarrow: false, textangle: 0,
+    font: { size: 11, color: ev.kind === 'primary_gt' ? 'rgba(248,81,73,0.95)' : 'rgba(88,166,255,0.85)' },
+    xanchor: 'left', yanchor: 'top', xshift: 5,
+  }));
+}
+
+function buildAlertShapes(ts, alertArr) {
+  const shapes = [];
+  let inAlert = false;
+  let start = null;
+  const pushAlert = (x0, x1) => {
+    // Bold filled band
+    shapes.push({
+      type: 'rect', xref: 'x', yref: 'paper',
+      x0, x1, y0: 0, y1: 1,
+      fillcolor: 'rgba(248,81,73,0.28)',
+      line: { width: 0 }, layer: 'above',
+    });
+    // Strong left-edge line
+    shapes.push({
+      type: 'line', xref: 'x', yref: 'paper',
+      x0, x1: x0, y0: 0, y1: 1,
+      line: { color: 'rgba(248,81,73,0.95)', width: 2.5 },
+      layer: 'above',
+    });
+  };
+  for (let i = 0; i < alertArr.length; i++) {
+    if (alertArr[i] && !inAlert) { inAlert = true; start = ts[i]; }
+    if (!alertArr[i] && inAlert) { pushAlert(start, ts[i-1]); inAlert = false; }
+  }
+  if (inAlert && start) pushAlert(start, ts[ts.length-1]);
+  return shapes;
+}
+
+function buildAlertAnnotations(ts, alertArr) {
+  const annotations = [];
+  let inAlert = false;
+  let start = null;
+  const pushAnnotation = (x0) => {
+    annotations.push({
+      x: x0, xref: 'x', yref: 'paper', y: 0.97,
+      text: '<b>⚡ SYSTEM ALERT</b>', showarrow: false, textangle: 0,
+      font: { size: 12, color: 'rgba(248,81,73,1.0)', family: 'SF Mono, Fira Code, monospace' },
+      xanchor: 'left', yanchor: 'top', xshift: 6,
+      bgcolor: 'rgba(13,17,23,0.7)', borderpad: 3,
+    });
+  };
+  for (let i = 0; i < alertArr.length; i++) {
+    if (alertArr[i] && !inAlert) { inAlert = true; start = ts[i]; }
+    if (!alertArr[i] && inAlert) { pushAnnotation(start); inAlert = false; }
+  }
+  if (inAlert && start) pushAnnotation(start);
+  return annotations;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   RENDER FRAME — update x-axis window
+════════════════════════════════════════════════════════════════ */
+function renderFrame() {
+  if (!App.data) return;
+  const ts  = App.data.timestamps;
+  const N   = ts.length;
+  const cur = Math.min(App.cursor, N - 1);
+  const win = App.windowSize;
+
+  // X-axis range
+  const xEnd   = ts[cur];
+  const xStart = win > 0 ? ts[Math.max(0, cur - win)] : ts[App.meta.warmup_end_t + 1];
+
+  const rangeUpdate = { 'xaxis.range': [xStart, xEnd] };
+
+  if (App.signalsInited) Plotly.relayout('chart-signals', rangeUpdate);
+  if (App.anomalyInited) Plotly.relayout('chart-anomaly', rangeUpdate);
+
+  // Update cursor line on both charts
+  const cursorShape = {
+    type: 'line', xref: 'x', yref: 'paper',
+    x0: xEnd, x1: xEnd, y0: 0, y1: 1,
+    line: { color: 'rgba(255,255,255,0.3)', width: 1 },
+  };
+  const eventShapes      = buildEventShapes(ts);
+  const alertShapes      = buildAlertShapes(ts, App.data.system.alert);
+  const groupAlertShapes = buildGroupAlertShapes();
+  const alertAnnotations = buildAlertAnnotations(ts, App.data.system.alert);
+  const eventAnnotations = buildEventAnnotations(ts);
+
+  if (App.signalsInited)
+    Plotly.relayout('chart-signals', { shapes: [...eventShapes, cursorShape], annotations: eventAnnotations });
+  if (App.anomalyInited)
+    Plotly.relayout('chart-anomaly', { shapes: [...eventShapes, ...groupAlertShapes, ...alertShapes, cursorShape], annotations: alertAnnotations });
+
+  // Update sidebar
+  updateSidebar(cur);
+
+  // Warmup notice
+  const warmupNotice = document.getElementById('warmup-notice');
+  warmupNotice.style.display = App.data.in_warmup[cur] ? 'block' : 'none';
+}
+
+function updateSidebar(idx) {
+  const ts     = App.data.timestamps;
+  const sys    = App.data.system;
+  const groups = App.data.groups;
+
+  // Timestamp
+  document.getElementById('ts-display').textContent = ts[idx] || '—';
+
+  // System alert
+  const isAlert  = sys.alert[idx] === 1;
+  const isHot    = sys.hot[idx] === 1;
+  const streak   = sys.streak[idx] || 0;
+  const badge    = document.getElementById('alert-badge');
+  const streakEl = document.getElementById('streak-val');
+  if (isAlert) {
+    badge.textContent = '⚠ SYSTEM ALERT';
+    badge.className = 'system-alert-badge alert';
+  } else if (isHot) {
+    badge.textContent = '● ELEVATED';
+    badge.className = 'system-alert-badge alert';
+    badge.style.animation = 'none';
+  } else {
+    badge.textContent = '● MONITORING';
+    badge.className = 'system-alert-badge normal';
+  }
+  badge.style.animation = isAlert ? '' : 'none';
+  streakEl.textContent = streak;
+  // Show alert duration row only when an alert is active
+  document.getElementById('streak-row').style.display = (streak > 0) ? 'flex' : 'none';
+
+  // Group tiles
+  App.meta.groups.forEach(g => {
+    const tile   = document.getElementById(`tile-${g.name}`);
+    const bar    = document.getElementById(`warmth-bar-${g.name}`);
+    const status = document.getElementById(`status-${g.name}`);
+    if (!tile) return;
+    const gData  = groups[g.name];
+    const warmth = gData ? (gData.warmth[idx] || 0) : 0;
+    const hot    = gData ? (gData.hot[idx] === 1) : false;
+    bar.style.width = `${(warmth * 100).toFixed(1)}%`;
+    status.textContent = hot ? 'HOT' : warmth > 0.1 ? 'WARM' : 'COLD';
+    tile.classList.toggle('hot', hot);
+  });
+}
+
+function updateScrubber() {
+  const scrub = document.getElementById('scrub');
+  scrub.value = App.cursor;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PLAYBACK
+════════════════════════════════════════════════════════════════ */
+function startPlayback() {
+  if (App.playing) return;
+  App.playing = true;
+  document.getElementById('btn-play').textContent = '⏸';
+  document.getElementById('btn-play').classList.add('active');
+
+  const N = App.data ? App.data.timestamps.length : 0;
+  App.frameInterval = setInterval(() => {
+    App.stepsPerFrame = Math.max(1, Math.round(App.speedMult * 3));
+    App.cursor = Math.min(App.cursor + App.stepsPerFrame, N - 1);
+    renderFrame();
+    updateScrubber();
+    if (App.cursor >= N - 1) stopPlayback();
+  }, App.frameMs);
+}
+
+function stopPlayback() {
+  App.playing = false;
+  clearInterval(App.frameInterval);
+  document.getElementById('btn-play').textContent = '▶';
+  document.getElementById('btn-play').classList.remove('active');
+}
+
+/* Controls */
+document.getElementById('btn-play').addEventListener('click', () => {
+  App.playing ? stopPlayback() : startPlayback();
+});
+
+document.getElementById('btn-normalize').addEventListener('click', () => {
+  if (!App.data || App.forceNormalize) return;   // forced normalize can't be toggled off
+  App.normalizeSignals = !App.normalizeSignals;
+  document.getElementById('btn-normalize').classList.toggle('active', App.normalizeSignals);
+  // Re-render signal chart with current event shapes
+  const ts = App.data.timestamps;
+  renderSigChart(buildEventShapes(ts), buildEventAnnotations(ts));
+  // Re-apply the current x-window so the view doesn't jump to full range
+  renderFrame();
+});
+
+document.getElementById('btn-rewind').addEventListener('click', () => {
+  stopPlayback();
+  App.cursor = App.meta ? App.meta.warmup_end_t + 1 : 0;
+  renderFrame(); updateScrubber();
+});
+
+document.getElementById('btn-step').addEventListener('click', () => {
+  stopPlayback();
+  if (App.data) {
+    App.cursor = Math.min(App.cursor + 1, App.data.timestamps.length - 1);
+    renderFrame(); updateScrubber();
+  }
+});
+
+document.getElementById('speed-select').addEventListener('change', e => {
+  App.speedMult = parseFloat(e.target.value);
+});
+
+document.getElementById('window-select').addEventListener('change', e => {
+  App.windowSize = parseInt(e.target.value) || 0;
+  renderFrame();
+});
+
+document.getElementById('scrub').addEventListener('input', e => {
+  stopPlayback();
+  App.cursor = parseInt(e.target.value);
+  renderFrame();
+});
+
+/* ═══════════════════════════════════════════════════════════════
+   BACK BUTTON
+════════════════════════════════════════════════════════════════ */
+document.getElementById('back-btn').addEventListener('click', () => {
+  stopPlayback();
+  App.signalsInited = false;
+  App.anomalyInited = false;
+  showScreen('catalog');
+});
+
+/* ═══════════════════════════════════════════════════════════════
+   UTILITIES
+════════════════════════════════════════════════════════════════ */
+function esc(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function fmtDate(ts) {
+  if (!ts) return '—';
+  // ts like "2020-08-14 00:00:00" → "Aug 14, 2020"
+  try {
+    const d = new Date(ts.replace(' ', 'T'));
+    return d.toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
+  } catch(e) { return ts.slice(0,10); }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   RESIZE HANDLER
+════════════════════════════════════════════════════════════════ */
+window.addEventListener('resize', () => {
+  if (App.signalsInited) Plotly.Plots.resize('chart-signals');
+  if (App.anomalyInited) Plotly.Plots.resize('chart-anomaly');
+});
+</script>
+</body>
+</html>

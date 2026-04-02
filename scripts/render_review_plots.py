@@ -1,4 +1,4 @@
-#scripts/render_grid_review_plots.py
+#scripts/render_review_plots.py
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 import yaml
 
 
@@ -33,13 +34,7 @@ def _load_source_series(cfg: dict, source_name: str) -> pd.DataFrame:
     df = pd.read_csv(p)
     df["ts"] = pd.to_datetime(df[src_cfg["timestamp_col"]], errors="raise")
 
-    fields = dict(src_cfg.get("fields") or {})
-    if len(fields) != 1:
-        raise ValueError(f"Expected exactly one field mapping for source '{source_name}'")
-    canon_name, csv_col = next(iter(fields.items()))
-    df[canon_name] = pd.to_numeric(df[csv_col], errors="coerce")
-
-    return df[["ts", canon_name]].copy()
+    return df.copy()
 
 
 def _modeled_feature_order(cfg: dict) -> List[str]:
@@ -62,11 +57,23 @@ def _load_modeled_feature_series(cfg: dict) -> Dict[str, pd.DataFrame]:
     """
     out: Dict[str, pd.DataFrame] = {}
     for src in ((cfg.get("data") or {}).get("sources") or []):
+        src_name = str(src.get("name"))
         fields = dict(src.get("fields") or {})
-        if len(fields) != 1:
+        if not fields:
             continue
-        feat_name = next(iter(fields.keys()))
-        out[feat_name] = _load_source_series(cfg, str(src.get("name")))
+
+        base_df = _load_source_series(cfg, src_name)
+        keep_cols = ["ts"]
+
+        for feat_name, csv_col in fields.items():
+            if csv_col not in base_df.columns:
+                raise ValueError(
+                    f"CSV column '{csv_col}' for feature '{feat_name}' "
+                    f"not found in source '{src_name}'"
+                )
+            feat_df = base_df[["ts", csv_col]].copy()
+            feat_df[feat_name] = pd.to_numeric(feat_df[csv_col], errors="coerce")
+            out[str(feat_name)] = feat_df[["ts", str(feat_name)]]
     return out
 
 
@@ -216,6 +223,42 @@ def _system_trace(one_sub: pd.DataFrame) -> Tuple[pd.Series, str]:
     return pd.Series([0.0] * len(one_sub)), "System signal"
 
 
+def _zscore_for_plot(s: pd.Series) -> pd.Series:
+    vals = pd.to_numeric(s, errors="coerce")
+    mu = vals.mean(skipna=True)
+    sigma = vals.std(skipna=True)
+    if pd.isna(sigma) or float(sigma) == 0.0:
+        return pd.Series(np.zeros(len(vals)), index=vals.index, dtype=float)
+    return (vals - float(mu)) / float(sigma)
+
+
+def _config_event_windows(cfg: dict) -> List[Tuple[str, pd.Timestamp, pd.Timestamp]]:
+    out: List[Tuple[str, pd.Timestamp, pd.Timestamp]] = []
+    for src in ((cfg.get("data") or {}).get("sources") or []):
+        labels = (src.get("labels") or {})
+        for w in (labels.get("event_windows") or []):
+            name = str(w.get("name") or f"window_{len(out) + 1}")
+            start = pd.Timestamp(w["start"])
+            end = pd.Timestamp(w["end"])
+            out.append((name, start, end))
+    out.sort(key=lambda x: x[1])
+    return out
+
+
+def _nearest_t_at_or_after(one: pd.DataFrame, ts: pd.Timestamp) -> int:
+    idx = one["ts"].searchsorted(ts, side="left")
+    if idx >= len(one):
+        idx = len(one) - 1
+    return int(one.iloc[int(idx)]["t"])
+
+
+def _nearest_t_at_or_before(one: pd.DataFrame, ts: pd.Timestamp) -> int:
+    idx = one["ts"].searchsorted(ts, side="right") - 1
+    if idx < 0:
+        idx = 0
+    return int(one.iloc[int(idx)]["t"])
+
+
 def _plot_one_window(
     *,
     run_df: pd.DataFrame,
@@ -227,6 +270,7 @@ def _plot_one_window(
     title: str,
     focal_start: Optional[pd.Timestamp] = None,
     focal_end: Optional[pd.Timestamp] = None,
+    normalize_raw: bool = False,
 ) -> None:    
     group_names = _sorted_group_names(run_df)
 
@@ -261,19 +305,29 @@ def _plot_one_window(
     axg = fig.add_subplot(gs[3, 0], sharex=ax0)
     ax3 = fig.add_subplot(gs[4, 0], sharex=ax0)
 
-    # Panel 1: all modeled raw signals
+    # Panel 1: all modeled raw signals (or normalized overlay)
     for feat_name in feature_order:
         sub = feature_sub.get(feat_name)
         if sub is None or sub.empty:
             continue
+        y = sub[feat_name]
+        label = _feature_label(cfg, feat_name)
+        if normalize_raw:
+            y = _zscore_for_plot(y)
+            label = f"{label} (z)"
         ax0.plot(
             sub["ts"],
-            sub[feat_name],
+            y,
             linewidth=1.8,
             alpha=0.9,
-            label=_feature_label(cfg, feat_name),
+            label=label,
         )
-    ax0.set_title("Raw modeled signals")
+    if normalize_raw:
+        ax0.axhline(0.0, linestyle="--", linewidth=1.0, alpha=0.7)
+        ax0.set_title("Raw modeled signals (normalized z-score)")
+        ax0.set_ylabel("z-score")
+    else:
+        ax0.set_title("Raw modeled signals")
     ax0.grid(True, alpha=0.3)
     ax0.legend(loc="upper left", frameon=True)
 
@@ -358,6 +412,7 @@ def main() -> None:
     ap.add_argument("--title", default=None)
     ap.add_argument("--event-start", default=None)
     ap.add_argument("--event-end", default=None)
+    ap.add_argument("--normalize-raw", action="store_true")
     args = ap.parse_args()
 
     run_dir = Path(args.run_dir)
@@ -392,6 +447,20 @@ def main() -> None:
     pad_steps = int(args.pad_steps)
 
     gt_windows = (((summary.get("ground_truth") or {}).get("system") or {}).get("gt_windows") or [])
+    gt_window_labels: List[str] = []
+    if gt_windows:
+        gt_window_labels = [f"gt_window_{i:02d}" for i in range(1, len(gt_windows) + 1)]
+    else:
+        cfg_windows = _config_event_windows(cfg)
+        gt_windows = []
+        gt_window_labels = []
+        for name, start_ts, end_ts in cfg_windows:
+            gs = _nearest_t_at_or_after(one, start_ts)
+            ge = _nearest_t_at_or_before(one, end_ts)
+            if ge < gs:
+                continue
+            gt_windows.append((gs, ge))
+            gt_window_labels.append(name)
     alert_eps = (((summary.get("alerts") or {}).get("episodes") or {}).get("episodes") or [])
 
     gt_dir = analysis_dir / "plots" / "gt_windows"
@@ -412,6 +481,7 @@ def main() -> None:
             title=args.title or f"Review window: {start_ts} to {end_ts}",
             focal_start=focal_start,
             focal_end=focal_end,
+            normalize_raw=args.normalize_raw,
         )
         return
 
@@ -426,6 +496,8 @@ def main() -> None:
         end_ts = t_to_ts[plot_e]
         focal_start = t_to_ts[gs]
         focal_end = t_to_ts[ge]
+        label = gt_window_labels[i - 1] if i - 1 < len(gt_window_labels) else f"gt_window_{i:02d}"
+        safe_label = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in label)
 
         _plot_one_window(
             run_df=run_df,
@@ -433,10 +505,11 @@ def main() -> None:
             cfg=cfg,
             start_ts=start_ts,
             end_ts=end_ts,
-            out_path=gt_dir / f"gt_window_{i:02d}_t{gs}_t{ge}.png",
-            title=f"GT window {i}: t={gs}..{ge}",
+            out_path=gt_dir / f"gt_window_{i:02d}_{safe_label}_t{gs}_t{ge}.png",
+            title=f"GT window {i}: {label} | t={gs}..{ge}",
             focal_start=focal_start,
             focal_end=focal_end,
+            normalize_raw=args.normalize_raw,
         )
 
     # Alert episodes
@@ -461,6 +534,7 @@ def main() -> None:
             title=f"Alert episode {i}: t={es}..{ee}",
             focal_start=focal_start,
             focal_end=focal_end,
+            normalize_raw=args.normalize_raw,
         )
 
 

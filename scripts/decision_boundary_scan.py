@@ -359,6 +359,11 @@ def build_system_windows_from_config(
     n = int(t_max - t_min + 1)
     active_count = np.zeros(n, dtype=np.int32)
 
+    # Clamp required source-count to the number of labeled sources actually present.
+    # Without this, a single-source dataset with decision.group_k > 1 produces
+    # zero system GT windows, which makes the boundary scan meaningless.
+    required_sources = max(1, min(int(k), len(by_source_t)))
+
     for _, windows in by_source_t.items():
         mask = np.zeros(n, dtype=np.int32)
         for s, e in windows:
@@ -368,7 +373,7 @@ def build_system_windows_from_config(
                 mask[s_idx:e_idx + 1] = 1
         active_count += mask
 
-    sys_active = (active_count >= int(k)).astype(bool)
+    sys_active = (active_count >= required_sources).astype(bool)
     sys_t = [t_min + i for i in range(n)]
     return _episodes_from_boolean(sys_active.tolist(), sys_t)
 
@@ -557,24 +562,36 @@ def candidate_grid(
     *,
     warmth_step: float,
     exhaustive: bool,
+    min_group_k: Optional[int],
+    max_group_k: Optional[int],
+    min_system_len: Optional[int],
+    max_system_len: Optional[int],
+    min_group_warmth: float,
+    max_group_warmth: float,
 ) -> Iterable[Tuple[str, Dict[str, Any]]]:
     base = build_candidate_from_config(decision)
 
     yield ("current", json.loads(json.dumps(base)))
 
-    for v in range(decision.group_k, len(decision.groups) + 1):
+    gk_lo = max(1, int(min_group_k) if min_group_k is not None else 1)
+    gk_hi = min(len(decision.groups), int(max_group_k) if max_group_k is not None else len(decision.groups))
+    for v in range(gk_lo, gk_hi + 1):
         cand = json.loads(json.dumps(base))
         cand["group_k"] = int(v)
         yield (f"group_k={v}", cand)
 
     max_streak = int(pd.to_numeric(one.get("system_hot_streak"), errors="coerce").fillna(0).max())
-    for v in range(decision.min_system_len, max(1, max_streak) + 1):
+    ms_lo = max(1, int(min_system_len) if min_system_len is not None else 1)
+    ms_hi_default = max(1, max_streak)
+    ms_hi = int(max_system_len) if max_system_len is not None else ms_hi_default
+    ms_hi = max(ms_lo, ms_hi)
+    for v in range(ms_lo, ms_hi + 1):
         cand = json.loads(json.dumps(base))
         cand["min_system_len"] = int(v)
         yield (f"min_system_len={v}", cand)
 
     for gname, g in decision.groups.items():
-        for v in range(g.min_instant_members, len(g.members) + 1):
+        for v in range(1, len(g.members) + 1):
             cand = json.loads(json.dumps(base))
             cand["groups"][gname]["min_instant_members"] = int(v)
             yield (f"{gname}.min_instant_members={v}", cand)
@@ -583,8 +600,15 @@ def candidate_grid(
         warmth_values_by_group: Dict[str, List[float]] = {}
         for gname, g in decision.groups.items():
             current = float(g.min_group_warmth)
-            vals = np.arange(current, 1.0000001 + warmth_step, warmth_step)
-            warmth_values_by_group[gname] = sorted(set(round(float(v), 6) for v in vals if 0.0 <= v <= 1.000001))
+            lo = max(0.0, float(min_group_warmth))
+            hi = min(1.0, float(max_group_warmth))
+            vals = np.arange(lo, hi + 1e-9, warmth_step)
+            warmth_values_by_group[gname] = sorted(
+                set(
+                    [round(float(v), 6) for v in vals if 0.0 <= v <= 1.000001]
+                    + [round(current, 6)]
+                )
+            )
 
         gnames = list(decision.groups.keys())
         for gname in gnames:
@@ -607,6 +631,12 @@ def main() -> None:
     ap.add_argument("--warmth-step", type=float, default=0.05)
     ap.add_argument("--max-lag-steps", type=int, default=None)
     ap.add_argument("--exhaustive", action="store_true")
+    ap.add_argument("--min-group-k", type=int, default=1)
+    ap.add_argument("--max-group-k", type=int, default=None)
+    ap.add_argument("--min-system-len", type=int, default=1)
+    ap.add_argument("--max-system-len", type=int, default=None)
+    ap.add_argument("--min-group-warmth", type=float, default=0.10)
+    ap.add_argument("--max-group-warmth", type=float, default=1.00)
     args = ap.parse_args()
 
     run_csv = Path(args.run_csv)
@@ -649,6 +679,12 @@ def main() -> None:
         one,
         warmth_step=float(args.warmth_step),
         exhaustive=bool(args.exhaustive),
+        min_group_k=args.min_group_k,
+        max_group_k=args.max_group_k,
+        min_system_len=args.min_system_len,
+        max_system_len=args.max_system_len,
+        min_group_warmth=float(args.min_group_warmth),
+        max_group_warmth=float(args.max_group_warmth),
     ):
         sig = candidate_signature(cand)
         if sig in seen:
