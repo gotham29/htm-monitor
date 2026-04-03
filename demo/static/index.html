@@ -104,13 +104,15 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .card-tag { display: inline-block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--accent); background: rgba(88,166,255,0.1); border-radius: 4px; padding: 3px 8px; margin-bottom: 12px; }
 .card-title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
 .card-subtitle { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
-.card-desc { font-size: 14px; line-height: 1.6; color: var(--muted); padding: 0 24px 16px; }
-.card-events { padding: 0 24px 16px; display: flex; flex-direction: column; gap: 8px; }
-.card-event { display: flex; align-items: center; gap: 10px; font-size: 13px; }
-.event-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.card-desc { font-size: 13px; line-height: 1.55; color: var(--muted); padding: 0 24px 14px; }
+.card-result { padding: 0 24px 14px; }
+.card-result-text { font-size: 12px; font-weight: 700; color: var(--accent); background: rgba(88,166,255,0.08); border: 1px solid rgba(88,166,255,0.2); border-radius: 5px; padding: 6px 10px; letter-spacing: .01em; line-height: 1.5; }
+.card-events { padding: 0 24px 16px; display: flex; flex-direction: column; gap: 6px; }
+.card-event { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--muted); }
+.event-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .event-dot.primary_gt { background: var(--alert-red); }
 .event-dot.explanatory { background: var(--accent); }
-.card-footer { padding: 16px 24px; border-top: 1px solid var(--border); margin-top: auto; display: flex; justify-content: flex-end; }
+.card-footer { padding: 14px 24px; border-top: 1px solid var(--border); margin-top: auto; display: flex; justify-content: flex-end; }
 .btn-launch {
   background: var(--accent); color: #0D1117; border: none; border-radius: 6px;
   padding: 9px 20px; font-size: 14px; font-weight: 700; cursor: pointer;
@@ -192,7 +194,10 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .event-item.detected-event:hover { border-color: #3FB950; }
 .event-item.tier2-event { border-color: rgba(210,153,34,0.35); }
 .event-item.tier2-event:hover { border-color: var(--warn); }
+.event-item.compact { padding: 5px 8px; border-radius: 5px; display: flex; align-items: center; gap: 7px; }
+.event-item.compact:hover { border-color: rgba(248,81,73,0.5); }
 .event-item-name { font-size: 14px; font-weight: 600; margin-bottom: 3px; }
+.event-item-name.compact { font-size: 12px; font-weight: 500; margin-bottom: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .event-item-period { font-size: 12px; color: var(--muted); }
 .event-badge { display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; border-radius: 3px; padding: 2px 7px; margin-bottom: 5px; }
 .event-badge.primary_gt  { background: rgba(248,81,73,0.15); color: var(--alert-red); }
@@ -201,15 +206,74 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .event-outcome.detected  { color: #3FB950; }
 .event-outcome.tier2     { color: var(--warn); }
 .event-outcome.subthresh { color: var(--muted); }
+.event-outcome-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.event-outcome-dot.detected { background: #3FB950; }
+.event-outcome-dot.tier2    { background: var(--warn); }
+.event-outcome-dot.missed   { background: rgba(248,81,73,0.45); }
+.event-outcome-dot.explanatory { background: var(--accent); opacity: 0.7; }
+.event-short-label { font-size: 10px; color: var(--muted); flex-shrink: 0; max-width: 90px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.events-summary-bar { display: flex; gap: 10px; margin-bottom: 7px; font-size: 11px; flex-wrap: wrap; }
+.events-summary-chip { padding: 2px 7px; border-radius: 4px; font-weight: 700; font-size: 10.5px; letter-spacing: .03em; }
+.events-summary-chip.t1  { background: rgba(63,185,80,0.15); color: #3FB950; }
+.events-summary-chip.t2  { background: rgba(210,153,34,0.15); color: var(--warn); }
+.events-summary-chip.mis { background: rgba(248,81,73,0.09); color: rgba(248,81,73,0.7); }
+.missed-toggle { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 4px 6px; border-radius: 5px; margin: 6px 0 3px; border: 1px solid var(--border); font-size: 11px; color: var(--muted); font-weight: 600; user-select: none; }
+.missed-toggle:hover { border-color: rgba(248,81,73,0.4); color: var(--text); }
+.missed-toggle .mt-arrow { font-size: 9px; transition: transform 0.15s; }
+.missed-toggle.open .mt-arrow { transform: rotate(90deg); }
+.missed-list { overflow: hidden; max-height: 0; transition: max-height 0.25s ease; display: flex; flex-direction: column; gap: 3px; }
+.missed-list.open { max-height: 600px; }
+
+/* Scenario brief */
+.scenario-brief {
+  background: rgba(88,166,255,0.07); border: 1px solid rgba(88,166,255,0.2);
+  border-radius: 7px; padding: 10px 12px; font-size: 12px; line-height: 1.6;
+  color: var(--muted);
+}
+.scenario-brief-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 6px;
+}
+.scenario-brief-label { font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--accent); }
+.scenario-brief-dismiss { font-size: 13px; color: var(--muted); cursor: pointer;
+  line-height: 1; background: none; border: none; padding: 0; }
+.scenario-brief-dismiss:hover { color: var(--text); }
 
 /* Performance summary strip */
 .perf-strip { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 7px; }
 .perf-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; }
 .perf-label { color: var(--muted); }
 .perf-val { font-weight: 700; font-family: var(--mono); font-size: 13px; }
-.perf-val.good { color: #3FB950; }
-.perf-val.warn { color: var(--warn); }
-.perf-note { font-size: 11px; color: var(--muted); font-style: italic; padding-top: 5px; border-top: 1px solid var(--border); line-height: 1.4; }
+.perf-val.good  { color: #3FB950; }
+.perf-val.warn  { color: var(--warn); }
+.perf-val.alert { color: var(--alert-red); }
+.perf-note { font-size: 11px; color: var(--muted); font-style: italic; line-height: 1.4; }
+.perf-notes-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--accent); cursor: pointer; margin-top: 6px; padding: 2px 0; background: none; border: none; user-select: none; opacity: 0.8; }
+.perf-notes-toggle:hover { opacity: 1; }
+.perf-notes-arrow { font-size: 8px; transition: transform 0.15s; display: inline-block; }
+.perf-notes-wrap { max-height: 0; overflow: hidden; transition: max-height 0.3s ease; padding-top: 0; }
+.perf-notes-wrap.open { max-height: 800px; padding-top: 5px; border-top: 1px solid var(--border); }
+.verdict-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+.verdict-headline { font-size: 17px; font-weight: 800; color: var(--text); letter-spacing: -.3px; line-height: 1.2; margin-bottom: 4px; }
+.verdict-headline .hl-green { color: #3FB950; }
+.verdict-headline .hl-red   { color: var(--alert-red); }
+.verdict-headline .hl-warn  { color: var(--warn); }
+.verdict-tagline { font-size: 12px; color: var(--muted); font-style: italic; line-height: 1.4; }
+
+/* Hover card — floats beside hovered event item */
+#ev-hover-card {
+  position: fixed; z-index: 500; width: 270px;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 9px;
+  padding: 12px 14px; box-shadow: 0 8px 30px rgba(0,0,0,0.55);
+  pointer-events: none; opacity: 0; transition: opacity 0.1s;
+  font-size: 12px; line-height: 1.5;
+}
+#ev-hover-card.show { opacity: 1; }
+.ehc-outcome { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+.ehc-name { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 6px; line-height: 1.3; }
+.ehc-desc { color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+.ehc-hint { font-size: 10px; color: var(--accent); margin-top: 8px; opacity: 0.8; }
 
 /* Current timestamp */
 .ts-display { font-family: var(--mono); font-size: 13px; color: var(--accent); }
@@ -235,6 +299,45 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .scrub-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); font-family: var(--mono); }
 #scrub { width: 100%; accent-color: var(--accent); cursor: pointer; }
 
+/* Scrubber tick marks overlay */
+.scrub-ticks-wrap { position: relative; height: 6px; margin-bottom: 1px; pointer-events: none; }
+.scrub-tick {
+  position: absolute; top: 0; width: 2px; height: 6px;
+  border-radius: 1px; transform: translateX(-50%);
+  opacity: 0.85;
+}
+.scrub-tick.tp   { background: #3FB950; }
+.scrub-tick.fp   { background: var(--warn); }
+
+/* Alert Episodes panel */
+.alert-episodes-toggle {
+  display: flex; align-items: center; justify-content: space-between;
+  cursor: pointer; user-select: none;
+}
+.alert-episodes-toggle .toggle-arrow {
+  font-size: 10px; color: var(--muted); transition: transform 0.2s;
+}
+.alert-episodes-toggle.open .toggle-arrow { transform: rotate(90deg); }
+.alert-episodes-list {
+  display: none; flex-direction: column; gap: 4px; margin-top: 8px;
+  max-height: 240px; overflow-y: auto;
+}
+.alert-episodes-list.open { display: flex; }
+.alert-ep-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 5px 8px; border-radius: 5px; border: 1px solid var(--border);
+  background: var(--bg3); cursor: pointer; transition: border-color 0.15s;
+  gap: 6px;
+}
+.alert-ep-item:hover { border-color: var(--accent); }
+.alert-ep-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.alert-ep-dot.tp { background: #3FB950; }
+.alert-ep-dot.fp { background: var(--warn); }
+.alert-ep-info { flex: 1; min-width: 0; }
+.alert-ep-ts { font-size: 11px; font-family: var(--mono); color: var(--text); white-space: nowrap; }
+.alert-ep-label { font-size: 10px; color: var(--muted); margin-top: 1px; }
+.alert-ep-jump { font-size: 10px; color: var(--muted); flex-shrink: 0; }
+
 /* Window size */
 .window-select {
   background: var(--bg3); border: 1px solid var(--border); color: var(--text);
@@ -249,8 +352,10 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
   background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
   overflow: hidden; min-height: 0;
 }
-.chart-panel-header { padding: 8px 14px 0; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+.chart-panel-header { padding: 8px 14px 0; display: flex; align-items: flex-start; justify-content: space-between; flex-shrink: 0; }
+.chart-panel-title-wrap { display: flex; flex-direction: column; gap: 2px; }
 .chart-panel-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.chart-panel-subtitle { font-size: 10px; color: var(--muted); opacity: 0.7; letter-spacing: .01em; }
 .chart-panel-legend { display: flex; gap: 14px; align-items: center; }
 .btn-normalize {
   font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
@@ -269,6 +374,7 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 }
 .chart-view-tab:hover { border-color: var(--accent); color: var(--accent); }
 .chart-view-tab.active { background: var(--bg3); border-color: var(--accent); color: var(--text); }
+.chart-view-tab.secondary { opacity: 0.55; font-size: 9px; }
 .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
 .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
 .chart-div { flex: 1; min-height: 0; }
@@ -346,8 +452,8 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
     <button class="btn-logout" id="logout-btn">Sign out</button>
   </div>
   <div class="catalog-body">
-    <div class="catalog-title">Monitoring Scenarios</div>
-    <div class="catalog-subtitle">Select a use case to launch the live replay viewer</div>
+    <div class="catalog-title">Critical Infrastructure Anomaly Detection</div>
+    <div class="catalog-subtitle">Coordinated multi-sensor anomaly detection for SCADA and operational technology networks · powered by Hierarchical Temporal Memory</div>
     <div class="usecase-grid" id="usecase-grid">
       <div class="catalog-loading"><div class="spinner"></div></div>
     </div>
@@ -384,6 +490,22 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
         </div>
       </div>
 
+      <!-- Lead takeaway (populated by JS if meta.lead_takeaway present) -->
+      <div class="sidebar-section" id="lead-section" style="display:none">
+        <div class="lead-takeaway" id="lead-takeaway"><!-- filled by JS --></div>
+      </div>
+
+      <!-- Scenario brief (what_to_watch — populated by JS, dismissible) -->
+      <div class="sidebar-section" id="brief-section" style="display:none">
+        <div class="scenario-brief" id="scenario-brief">
+          <div class="scenario-brief-header">
+            <span class="scenario-brief-label">📋 Scenario Brief</span>
+            <button class="scenario-brief-dismiss" id="brief-dismiss" title="Dismiss">✕</button>
+          </div>
+          <div id="brief-body"></div>
+        </div>
+      </div>
+
       <!-- Performance summary (populated by JS if meta.eval_stats present) -->
       <div class="sidebar-section" id="perf-section" style="display:none">
         <div class="sidebar-label">Detection Performance</div>
@@ -402,6 +524,15 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
         <div class="event-list" id="event-list"><!-- filled by JS --></div>
       </div>
 
+      <!-- Alert Episodes (populated by JS) -->
+      <div class="sidebar-section" id="alert-episodes-section" style="display:none">
+        <div class="alert-episodes-toggle" id="alert-episodes-toggle">
+          <div class="sidebar-label" style="margin-bottom:0">Alert Episodes</div>
+          <span class="toggle-arrow">▶</span>
+        </div>
+        <div class="alert-episodes-list" id="alert-episodes-list"><!-- filled by JS --></div>
+      </div>
+
       <!-- Timestamp -->
       <div class="sidebar-section">
         <div class="sidebar-label">Current Time</div>
@@ -418,13 +549,14 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
             <button class="btn-icon" id="btn-step"   title="Step forward">⏭</button>
             <select class="speed-select" id="speed-select">
               <option value="0.5">0.5×</option>
-              <option value="1" selected>1×</option>
-              <option value="2">2×</option>
+              <option value="1">1×</option>
+              <option value="2" selected>2×</option>
               <option value="5">5×</option>
               <option value="20">20×</option>
             </select>
           </div>
           <div class="scrub-wrap">
+            <div class="scrub-ticks-wrap" id="scrub-ticks"><!-- tick marks injected by JS --></div>
             <input type="range" id="scrub" min="0" max="1000" value="0"/>
             <div class="scrub-labels">
               <span id="scrub-start">—</span>
@@ -441,6 +573,13 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
               <option value="0">All data</option>
             </select>
           </div>
+        </div>
+      </div>
+
+      <!-- Alert routing note -->
+      <div style="padding: 10px 2px 4px; border-top: 1px solid var(--border); margin-top: 8px;">
+        <div style="font-size: 10px; color: var(--muted); line-height: 1.5;">
+          In production, alerts route to your SCADA console, on-call system, or webhook of choice.
         </div>
       </div>
     </div>
@@ -462,11 +601,14 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
       <!-- Detection layers chart -->
       <div class="chart-panel" id="panel-anomaly">
         <div class="chart-panel-header">
-          <div class="chart-panel-title" id="anomaly-chart-title">Group Warmth</div>
+          <div class="chart-panel-title-wrap">
+            <div class="chart-panel-title" id="anomaly-chart-title">Group Warmth</div>
+            <div class="chart-panel-subtitle" id="anomaly-chart-subtitle">Fraction of each group's sensors simultaneously anomalous · red band = system alert · amber = single-group signal</div>
+          </div>
           <div class="chart-panel-legend" id="legend-anomaly">
             <div class="chart-view-tabs">
               <button class="chart-view-tab active" id="tab-warmth" title="Show group consensus warmth — the key signal for each tier">Group Warmth</button>
-              <button class="chart-view-tab" id="tab-scores" title="Show raw per-model anomaly probability scores">Model Scores</button>
+              <button class="chart-view-tab secondary" id="tab-scores" title="Show raw per-model anomaly probability scores (advanced)">Model Scores</button>
             </div>
           </div>
         </div>
@@ -481,6 +623,14 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 <div id="warmup-notice">⚠ Learning period — model is warming up, alerts suppressed</div>
 
 <!-- Info overlay (event tooltip) -->
+<!-- Floating event hover card -->
+<div id="ev-hover-card">
+  <div class="ehc-outcome" id="ehc-outcome"></div>
+  <div class="ehc-name" id="ehc-name"></div>
+  <div class="ehc-desc" id="ehc-desc"></div>
+  <div class="ehc-hint">Click to jump →</div>
+</div>
+
 <div class="info-overlay" id="info-overlay">
   <span class="info-overlay-close" id="info-close">✕</span>
   <div class="info-overlay-title" id="info-title"></div>
@@ -501,7 +651,7 @@ const App = {
   // playback
   cursor: 0,             // current step index into data arrays
   playing: false,
-  speedMult: 1,
+  speedMult: 2,
   windowSize: 336,       // steps visible
   frameInterval: null,
   stepsPerFrame: 1,
@@ -606,13 +756,14 @@ function renderCatalog(usecases) {
   grid.innerHTML = usecases.map(uc => `
     <div class="usecase-card" data-id="${uc.id}">
       <div class="card-header">
-        <div class="card-tag">Live Replay</div>
+        <div class="card-tag">Historical Benchmark</div>
         <div class="card-title">${esc(uc.title)}</div>
         <div class="card-subtitle">${esc(uc.subtitle || '')}</div>
       </div>
+      ${uc.card_result ? `<div class="card-result"><div class="card-result-text">${esc(uc.card_result)}</div></div>` : ''}
       <div class="card-desc">${esc(uc.description || '')}</div>
       <div class="card-events">
-        ${(uc.events || []).map(ev => `
+        ${(uc.events || []).filter(ev => ev.tier > 0 || ev.kind === 'explanatory').map(ev => `
           <div class="card-event">
             <div class="event-dot ${ev.kind}"></div>
             <span>${esc(ev.label)}</span>
@@ -651,7 +802,20 @@ async function launchReplay(id) {
     App.meta = doc.meta;
     App.data = doc.data;
     App.activeUsecase = id;
-    App.cursor = App.meta.warmup_end_t + 1;  // start after warmup
+    // Start one full window past warmup so the initial view contains only
+    // post-warmup evaluation data (avoids flat-line artifact from training period).
+    // Start just before the first tier-1 (system alert) event so the detection
+    // story unfolds immediately on play. Fall back to eval start if none found.
+    const _firstDetected = (App.meta.events || []).find(e => e.kind === 'primary_gt' && e.tier === 1);
+    if (_firstDetected) {
+      const _ts = App.data.timestamps;
+      const _si = _ts.findIndex(t => t >= _firstDetected.start);
+      // Position so event start is ~20% from left — plenty of pre-event context
+      App.cursor = Math.min(_ts.length - 1,
+        Math.max(App.meta.warmup_end_t + 1, (_si >= 0 ? _si : 0) + Math.floor(App.windowSize * 0.2)));
+    } else {
+      App.cursor = Math.min(App.meta.warmup_end_t + 1 + App.windowSize, App.meta.total_steps - 1);
+    }
     App.playing = false;
     App.signalsInited = false;
     App.anomalyInited = false;
@@ -661,18 +825,23 @@ async function launchReplay(id) {
     document.getElementById('topbar-period').textContent =
       `${fmtDate(App.meta.time_range.start)} → ${fmtDate(App.meta.time_range.end)}`;
 
-    // Scrubber range (post-warmup only)
+    // Scrubber range — start after the window is fully in the eval period
     const scrub = document.getElementById('scrub');
-    scrub.min = App.meta.warmup_end_t + 1;
+    scrub.min = Math.min(App.meta.warmup_end_t + 1 + App.windowSize, App.meta.total_steps - 1);
     scrub.max = App.meta.total_steps - 1;
     scrub.value = App.cursor;
-    document.getElementById('scrub-start').textContent = fmtDate(App.meta.time_range.start);
+    // Show eval-period start (first post-warmup timestamp) on scrubber left label
+    const evalStartTs = App.data.timestamps[App.meta.warmup_end_t + 1];
+    document.getElementById('scrub-start').textContent = fmtDate(evalStartTs);
     document.getElementById('scrub-end').textContent   = fmtDate(App.meta.time_range.end);
 
     // Build sidebar UI
+    buildLeadTakeaway();
+    buildScenarioBrief();
     buildPerfStrip();
     buildGroupTiles();
     buildEventList();
+    buildAlertEpisodes();   // computes episodes, renders panel + scrubber ticks
 
     // Build charts
     initCharts();
@@ -689,6 +858,41 @@ async function launchReplay(id) {
 /* ═══════════════════════════════════════════════════════════════
    SIDEBAR UI
 ════════════════════════════════════════════════════════════════ */
+function buildLeadTakeaway() {
+  const headline = App.meta.verdict_headline;
+  const tagline  = App.meta.verdict_tagline;
+  const section  = document.getElementById('lead-section');
+  if (!headline) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  // Colorize: "N of M" fraction → green; false alarm count → red
+  const colorized = headline
+    .replace(/\b(\d+ of \d+)\b/g, '<span class="hl-green">$1</span>')
+    .replace(/\b(0 false alarm[s]?)\b/gi, '<span class="hl-green">$1</span>')
+    .replace(/\b([1-9]\d* false alarm[s]?)\b/gi, '<span class="hl-red">$1</span>');
+  document.getElementById('lead-takeaway').innerHTML = `
+    <div class="verdict-card">
+      <div class="verdict-headline">${colorized}</div>
+      ${tagline ? `<div class="verdict-tagline">${esc(tagline)}</div>` : ''}
+      ${App.meta.what_to_watch ? `<div style="margin-top:8px"><button id="brief-toggle-btn" style="background:none;border:none;font-size:10.5px;color:var(--accent);cursor:pointer;padding:0;opacity:0.8">📋 How to explore ↓</button></div>` : ''}
+    </div>`;
+  const briefBtn = document.getElementById('brief-toggle-btn');
+  if (briefBtn) briefBtn.addEventListener('click', () => App._briefToggle && App._briefToggle());
+}
+
+function buildScenarioBrief() {
+  const text = App.meta.what_to_watch;
+  const section = document.getElementById('brief-section');
+  if (!text) { section.style.display = 'none'; return; }
+  // Start collapsed; user opens via the verdict card "How to explore" link below
+  section.style.display = 'none';
+  document.getElementById('brief-body').textContent = text;
+  document.getElementById('brief-dismiss').onclick = () => {
+    section.style.display = 'none';
+  };
+  // Expose a toggle hook on the verdict card (wired after buildLeadTakeaway)
+  App._briefToggle = () => { section.style.display = section.style.display === 'none' ? '' : 'none'; };
+}
+
 function buildPerfStrip() {
   const stats = App.meta.eval_stats;
   if (!stats) return;
@@ -708,50 +912,55 @@ function buildPerfStrip() {
     ? stats.primary_gt_events
     : (App.meta.events || []).filter(e => e.kind === 'primary_gt' || e.tier != null).length;
 
-  // Unconfirmed alerts: use explicit field or derive
-  const unconfirmed = stats.unconfirmed_alerts != null
+  // False positives: use explicit field or derive
+  const unconfirmed = stats.false_positives != null
+    ? stats.false_positives
+    : stats.unconfirmed_alerts != null
     ? stats.unconfirmed_alerts
     : (stats.system_alerts - stats.true_positives);
-  const fpClass = unconfirmed === 0 ? 'good' : 'warn';
 
-  // Tier 1 row value
-  const tier1Val = `${stats.true_positives} / ${primaryGtEvents} events`;
-  const tier1Class = stats.true_positives >= primaryGtEvents ? 'good' : 'warn';
-
-  // Tier 2 row
-  const tier2Detected = stats.group_alerts_detected;
-  const tier2Val = tier2Detected != null
-    ? `${tier2Detected} / ${primaryGtEvents} events`
-    : '—';
+  // Detected: fraction display
+  const detectedVal = `${stats.true_positives} / ${primaryGtEvents}`;
 
   strip.innerHTML = `
     <div class="perf-row">
-      <span class="perf-label">Evaluation period</span>
+      <span class="perf-label">test period</span>
       <span class="perf-val">${evalPeriod}</span>
     </div>
     <div class="perf-row">
-      <span class="perf-label">System alerts fired</span>
+      <span class="perf-label">target events</span>
+      <span class="perf-val">${primaryGtEvents}</span>
+    </div>
+    <div class="perf-row">
+      <span class="perf-label">system alerts</span>
       <span class="perf-val">${stats.system_alerts}</span>
     </div>
     <div class="perf-row">
-      <span class="perf-label">Confirmed (true positive)</span>
-      <span class="perf-val good">${stats.true_positives}</span>
+      <span class="perf-label">events detected</span>
+      <span class="perf-val good">${detectedVal}</span>
     </div>
     <div class="perf-row">
-      <span class="perf-label">Unconfirmed / borderline</span>
-      <span class="perf-val ${fpClass}">${unconfirmed}${unconfirmed > 0 ? ' ⚠' : ''}</span>
+      <span class="perf-label">false positives</span>
+      <span class="perf-val ${unconfirmed === 0 ? 'good' : 'alert'}">${unconfirmed}${unconfirmed > 0 ? ' ⚠' : ''}</span>
     </div>
-    <div class="perf-row" style="margin-top:4px;padding-top:5px;border-top:1px solid var(--border)">
-      <span class="perf-label" style="color:var(--text);font-weight:600">Tier 1 — System alert</span>
-      <span class="perf-val ${tier1Class}">${tier1Val}</span>
-    </div>
-    <div class="perf-row">
-      <span class="perf-label" style="color:var(--text);font-weight:600">Tier 2 — Group alert</span>
-      <span class="perf-val warn">${tier2Val}</span>
-    </div>
-    ${stats.recall_note ? `<div class="perf-note">${stats.recall_note}</div>` : ''}
-    ${stats.fp_note ? `<div class="perf-note" style="margin-top:4px">${stats.fp_note}</div>` : ''}
+    ${(stats.recall_note || stats.fp_note) ? `
+    <button class="perf-notes-toggle" id="perf-notes-toggle">ℹ Why? <span class="perf-notes-arrow" id="perf-notes-arrow">▶</span></button>
+    <div class="perf-notes-wrap" id="perf-notes-wrap">
+      ${stats.recall_note ? `<div class="perf-note">${stats.recall_note}</div>` : ''}
+      ${stats.fp_note ? `<div class="perf-note" style="margin-top:6px">${stats.fp_note}</div>` : ''}
+    </div>` : ''}
   `;
+
+  // Wire the collapse toggle
+  const notesToggle = document.getElementById('perf-notes-toggle');
+  const notesWrap   = document.getElementById('perf-notes-wrap');
+  const notesArrow  = document.getElementById('perf-notes-arrow');
+  if (notesToggle && notesWrap) {
+    notesToggle.addEventListener('click', () => {
+      const isOpen = notesWrap.classList.toggle('open');
+      notesArrow.style.transform = isOpen ? 'rotate(90deg)' : '';
+    });
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -869,9 +1078,16 @@ function initAnomChart() {
 function switchAnomView(view) {
   if (App.anomalyView === view) return;
   App.anomalyView = view;
-  // Update tab UI
+  // Update tab UI — active tab loses secondary styling; inactive tab regains it
   document.getElementById('tab-warmth').classList.toggle('active', view === 'warmth');
+  document.getElementById('tab-warmth').classList.toggle('secondary', view !== 'warmth');
   document.getElementById('tab-scores').classList.toggle('active', view === 'scores');
+  document.getElementById('tab-scores').classList.toggle('secondary', view !== 'scores');
+  // Update subtitle
+  const sub = document.getElementById('anomaly-chart-subtitle');
+  if (sub) sub.textContent = view === 'warmth'
+    ? 'Fraction of each group\'s sensors simultaneously anomalous · red band = system alert · amber = single-group signal'
+    : 'Raw anomaly probability per sensor model (0–1) · dotted line = detection threshold';
   // Re-init the chart with new traces
   initAnomChart();
   // Re-apply current x-range
@@ -895,41 +1111,240 @@ function buildGroupTiles() {
       <div class="group-warmth-bar-wrap">
         <div class="group-warmth-bar" id="warmth-bar-${g.name}" style="background:${g.color};width:0%"></div>
       </div>
-      <div class="group-status" id="status-${g.name}">COLD</div>
+      <div class="group-status" id="status-${g.name}">NORMAL</div>
     </div>
   `).join('');
+}
+
+/* ── Shared hover card ──────────────────────────────────────────── */
+const evHoverCard = document.getElementById('ev-hover-card');
+let evHoverTimer = null;
+
+function showEvHover(ev, anchorEl) {
+  clearTimeout(evHoverTimer);
+  // Outcome text + color
+  let outcomeText = '', outcomeColor = 'var(--muted)';
+  if (ev.kind === 'explanatory') {
+    outcomeText = 'ℹ Contextual event'; outcomeColor = 'var(--accent)';
+  } else if (ev.tier === 1) {
+    outcomeText = `⚡ Tier 1 — System Alert · ${ev.detection_lag_h}h lag`; outcomeColor = '#3FB950';
+  } else if (ev.tier === 2) {
+    outcomeText = '— No system alert · partial signal only'; outcomeColor = 'rgba(248,81,73,0.6)';
+  } else {
+    outcomeText = '— Below detection threshold'; outcomeColor = 'rgba(248,81,73,0.6)';
+    if (ev.miss_reason) outcomeText += ` · ${ev.miss_reason}`;
+  }
+  document.getElementById('ehc-outcome').textContent = outcomeText;
+  document.getElementById('ehc-outcome').style.color = outcomeColor;
+  document.getElementById('ehc-name').textContent = ev.label;
+  // Description: first 120 chars
+  const desc = ev.description || ev.context_note || ev.short_label || '';
+  document.getElementById('ehc-desc').textContent = desc.length > 140 ? desc.slice(0, 137) + '…' : desc;
+
+  // Position to the right of the anchor element, or below if near right edge
+  const rect = anchorEl.getBoundingClientRect();
+  const cardW = 280, cardH = 130;
+  let left = rect.right + 10;
+  let top  = rect.top;
+  if (left + cardW > window.innerWidth - 12) { left = rect.left - cardW - 10; }
+  if (top + cardH  > window.innerHeight - 12) { top = window.innerHeight - cardH - 12; }
+  evHoverCard.style.left = left + 'px';
+  evHoverCard.style.top  = top  + 'px';
+  evHoverCard.classList.add('show');
+}
+
+function hideEvHover() {
+  evHoverTimer = setTimeout(() => evHoverCard.classList.remove('show'), 80);
 }
 
 function buildEventList() {
   const events = App.meta.events || [];
   const el = document.getElementById('event-list');
-  el.innerHTML = events.map((ev, i) => {
-    const eventTypeName = App.meta.event_type_label || 'Event';
-    const kindLabel = ev.kind === 'primary_gt' ? `Known ${eventTypeName}` : 'Contextual';
-    // Three-tier outcome rendering
-    let outcomeHtml = '';
-    if (ev.tier === 1) {
-      outcomeHtml = `<div class="event-outcome detected">⚡ Tier 1 — System Alert · ${ev.detection_lag_h}h lag</div>`;
+
+  // "Detected" = system alert fired (tier 1) or contextual (explanatory)
+  // tier 2 (group-only alert, no system alert) treated same as missed from client perspective
+  const notable  = events.filter(ev => ev.kind === 'explanatory' || (ev.kind === 'primary_gt' && ev.tier === 1));
+  const missed   = events.filter(ev => ev.kind === 'primary_gt' && ev.tier !== 1);
+
+  // Make a compact row for any event
+  const makeRow = (ev) => {
+    const idx = events.indexOf(ev);
+    let dotClass = 'missed', badge = '', rowBorder = '';
+    if (ev.kind === 'explanatory') {
+      dotClass = ''; badge = `<span style="font-size:10px;color:var(--accent);margin-left:auto">ℹ</span>`;
+      rowBorder = 'border-color:rgba(88,166,255,0.25)';
+    } else if (ev.tier === 1) {
+      dotClass = 'detected'; badge = `<span style="font-size:10px;color:#3FB950;margin-left:auto;font-weight:700">⚡</span>`;
+      rowBorder = 'border-color:rgba(63,185,80,0.35)';
     } else if (ev.tier === 2) {
-      outcomeHtml = `<div class="event-outcome tier2">⚠ Tier 2 — Group Alert only</div>`;
-    } else if (ev.detected !== undefined) {
-      outcomeHtml = `<div class="event-outcome subthresh">— Below both thresholds</div>`;
+      dotClass = 'missed'; badge = '';
+      rowBorder = '';
     }
-    const itemClass = ev.tier === 1 ? ' detected-event' : (ev.tier === 2 ? ' tier2-event' : '');
+    const shortNum = ev.name
+      .replace(/^attack_(\d+)$/, (_, n) => `Attack ${n}`)
+      .replace(/^outage_/, 'Event: ')
+      .replace(/^covid_/, 'Context: ');
+    return `<div class="event-item compact" data-idx="${idx}" style="${rowBorder}">
+      <div class="event-outcome-dot ${dotClass}"></div>
+      <div class="event-item-name compact">${esc(shortNum)}</div>
+      ${badge}
+    </div>`;
+  };
+
+  let html = '';
+
+  // Notable events (detected + explanatory) — shown directly
+  if (notable.length) {
+    html += `<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:5px">Detected</div>`;
+    notable.forEach(ev => { html += makeRow(ev); });
+  }
+
+  // Missed events — collapsible
+  if (missed.length) {
+    const label = `${App.meta.event_type_label || 'Event'}s missed (${missed.length})`;
+    html += `<div class="missed-toggle" id="missed-toggle"><span>${label}</span><span class="mt-arrow">▶</span></div>`;
+    html += `<div class="missed-list" id="missed-list">`;
+    missed.forEach(ev => { html += makeRow(ev); });
+    html += `</div>`;
+  }
+
+  el.innerHTML = html;
+
+  // Click → jump + info overlay
+  el.querySelectorAll('.event-item').forEach(item => {
+    const ev = events[+item.dataset.idx];
+    item.addEventListener('click', () => jumpToEvent(ev));
+    item.addEventListener('mouseenter', () => showEvHover(ev, item));
+    item.addEventListener('mouseleave', hideEvHover);
+  });
+
+  // Missed toggle collapse
+  const missedToggle = document.getElementById('missed-toggle');
+  const missedList   = document.getElementById('missed-list');
+  if (missedToggle && missedList) {
+    missedToggle.addEventListener('click', () => {
+      missedToggle.classList.toggle('open');
+      missedList.classList.toggle('open');
+    });
+  }
+}
+
+/* ─── ALERT EPISODES ──────────────────────────────────────────── */
+function computeAlertEpisodes() {
+  // Returns array of {startIdx, endIdx, startTs, endTs, durationH, isTP, matchedEvent}
+  const ts       = App.data.timestamps;
+  const alert    = App.data.system.alert;
+  const events   = (App.meta.events || []).filter(e => e.kind === 'primary_gt');
+  const episodes = [];
+
+  // Build post-warmup event index ranges for TP matching
+  const evRanges = events.map(ev => {
+    const s = ts.findIndex(t => t >= ev.start);
+    const e = ts.findIndex(t => t >  ev.end);
+    return { name: ev.name, label: ev.label, s, e: e < 0 ? ts.length : e };
+  });
+
+  let inEp = false, epStart = 0;
+  for (let i = App.meta.warmup_end_t + 1; i < ts.length; i++) {
+    if (alert[i] && !inEp) { inEp = true; epStart = i; }
+    else if (!alert[i] && inEp) {
+      inEp = false;
+      const epEnd = i - 1;
+      const dur = epEnd - epStart + 1;
+      const matched = evRanges.find(r => !(epEnd < r.s || epStart >= r.e));
+      episodes.push({
+        startIdx: epStart, endIdx: epEnd,
+        startTs: ts[epStart], endTs: ts[epEnd],
+        durationH: dur,
+        isTP: !!matched,
+        matchedEvent: matched ? matched.label : null,
+      });
+    }
+  }
+  if (inEp) {
+    const epEnd = ts.length - 1;
+    const matched = evRanges.find(r => !(epEnd < r.s || epStart >= r.e));
+    episodes.push({
+      startIdx: epStart, endIdx: epEnd,
+      startTs: ts[epStart], endTs: ts[epEnd],
+      durationH: epEnd - epStart + 1,
+      isTP: !!matched,
+      matchedEvent: matched ? matched.label : null,
+    });
+  }
+  return episodes;
+}
+
+function buildAlertEpisodes() {
+  const episodes = computeAlertEpisodes();
+  App.alertEpisodes = episodes;
+
+  // ── Sidebar panel ──────────────────────────────────────────────
+  const section = document.getElementById('alert-episodes-section');
+  const list    = document.getElementById('alert-episodes-list');
+  const toggle  = document.getElementById('alert-episodes-toggle');
+
+  if (!episodes.length) { section.style.display = 'none'; return; }
+  section.style.display = '';
+
+  list.innerHTML = episodes.map((ep, i) => {
+    const cls      = ep.isTP ? 'tp' : 'fp';
+    const labelTxt = ep.isTP
+      ? `✓ Confirmed — ${ep.matchedEvent}`
+      : `✗ False positive (${ep.durationH}h)`;
     return `
-    <div class="event-item${itemClass}" data-idx="${i}">
-      <div class="event-badge ${ev.kind}">${kindLabel}</div>
-      <div class="event-item-name">${esc(ev.label)}</div>
-      <div class="event-item-period">${fmtDate(ev.start)} – ${fmtDate(ev.end)}</div>
-      ${outcomeHtml}
+    <div class="alert-ep-item" data-ep="${i}">
+      <div class="alert-ep-dot ${cls}"></div>
+      <div class="alert-ep-info">
+        <div class="alert-ep-ts">${fmtDate(ep.startTs)}</div>
+        <div class="alert-ep-label">${esc(labelTxt)}</div>
+      </div>
+      <span class="alert-ep-jump">→</span>
     </div>`;
   }).join('');
 
-  el.querySelectorAll('.event-item').forEach(item => {
+  list.querySelectorAll('.alert-ep-item').forEach(item => {
     item.addEventListener('click', () => {
-      const ev = events[+item.dataset.idx];
-      jumpToEvent(ev);
+      const ep = episodes[+item.dataset.ep];
+      // Jump to episode: show alert start at ~25% from left
+      let idx = ep.startIdx + Math.floor(App.windowSize * 0.25);
+      idx = Math.min(App.data.timestamps.length - 1, Math.max(App.meta.warmup_end_t + 1, idx));
+      App.cursor = idx;
+      stopPlayback();
+      renderFrame();
+      updateScrubber();
     });
+  });
+
+  // Open by default
+  toggle.classList.add('open');
+  list.classList.add('open');
+
+  // Toggle collapse on click
+  toggle.addEventListener('click', () => {
+    toggle.classList.toggle('open');
+    list.classList.toggle('open');
+  });
+
+  // ── Scrubber tick marks ────────────────────────────────────────
+  buildScrubberTicks(episodes);
+}
+
+function buildScrubberTicks(episodes) {
+  const container = document.getElementById('scrub-ticks');
+  container.innerHTML = '';
+  const total  = App.meta.total_steps - 1;
+  const minIdx = App.meta.warmup_end_t + 1;
+  const range  = total - minIdx;
+  if (range <= 0) return;
+
+  episodes.forEach(ep => {
+    const pct = (ep.startIdx - minIdx) / range * 100;
+    const tick = document.createElement('div');
+    tick.className = `scrub-tick ${ep.isTP ? 'tp' : 'fp'}`;
+    tick.style.left = pct + '%';
+    tick.title = `${ep.isTP ? '✓' : '⚠'} ${fmtDate(ep.startTs)}${ep.isTP ? ' — ' + ep.matchedEvent : ''}`;
+    container.appendChild(tick);
   });
 }
 
@@ -956,7 +1371,12 @@ function jumpToEvent(ev) {
   const parts = [];
   if (ev.description) parts.push(`<p style="margin-bottom:8px">${esc(ev.description)}</p>`);
 
-  if (ev.tier === 1) {
+  if (ev.kind === 'explanatory') {
+    parts.push(`<p style="color:var(--accent);font-weight:700;margin-bottom:4px">ℹ Context Window</p>`);
+    if (ev.context_note) {
+      parts.push(`<p style="color:var(--muted);font-size:12px">${esc(ev.context_note)}</p>`);
+    }
+  } else if (ev.tier === 1) {
     const groups = (ev.detected_by_groups || []).join(', ');
     parts.push(`<p style="color:#3FB950;font-weight:700;margin-bottom:4px">⚡ Tier 1 — System Alert</p>`);
     parts.push(`<p style="color:var(--muted);font-size:12px">Detected ${ev.detection_lag_h}h into the ${evTypeName} window · cross-group consensus via: ${groups}</p>`);
@@ -976,6 +1396,9 @@ function jumpToEvent(ev) {
     }
   } else if (ev.detected === false) {
     parts.push(`<p style="color:var(--muted);font-weight:700;margin-bottom:4px">— Below both thresholds</p>`);
+    if (ev.miss_reason) {
+      parts.push(`<p style="color:rgba(248,81,73,0.7);font-size:12px;font-style:italic;margin-bottom:6px">Why missed: ${esc(ev.miss_reason)}</p>`);
+    }
     if (ev.group_alert_note) {
       parts.push(`<p style="color:var(--muted);font-size:12px">${esc(ev.group_alert_note)}</p>`);
     }
@@ -1187,12 +1610,27 @@ function buildEventShapes(ts) {
 
 function buildEventAnnotations(ts) {
   const events = App.meta.events || [];
-  return events.map(ev => ({
-    x: ev.start, xref: 'x', yref: 'paper', y: 1,
-    text: ev.label, showarrow: false, textangle: 0,
-    font: { size: 11, color: ev.kind === 'primary_gt' ? 'rgba(248,81,73,0.95)' : 'rgba(88,166,255,0.85)' },
-    xanchor: 'left', yanchor: 'top', xshift: 5,
-  }));
+  return events.map(ev => {
+    const shortText = ev.short_label || ev.label;
+    // Tier-based styling
+    let color, fontSize, yPos, bold;
+    if (ev.kind === 'explanatory') {
+      color = 'rgba(88,166,255,0.80)'; fontSize = 10; yPos = 0.94; bold = false;
+    } else if (ev.tier === 1) {
+      color = 'rgba(63,185,80,0.95)';  fontSize = 10.5; yPos = 0.97; bold = true;
+    } else if (ev.tier === 2) {
+      color = 'rgba(210,153,34,0.90)'; fontSize = 10;   yPos = 0.94; bold = true;
+    } else {
+      color = 'rgba(248,81,73,0.55)';  fontSize = 9;    yPos = 0.91; bold = false;
+    }
+    return {
+      x: ev.start, xref: 'x', yref: 'paper', y: yPos,
+      text: bold ? `<b>${shortText}</b>` : shortText,
+      showarrow: false, textangle: -90,
+      font: { size: fontSize, color },
+      xanchor: 'left', yanchor: 'top', xshift: 4,
+    };
+  });
 }
 
 function buildAlertShapes(ts, alertArr) {
@@ -1260,8 +1698,35 @@ function renderFrame() {
 
   const rangeUpdate = { 'xaxis.range': [xStart, xEnd] };
 
+  // ── Dynamic y-axis: scale to the values VISIBLE in the current window ──
+  // Plotly auto-ranges to ALL data on init; during normal operations that
+  // makes signals appear flat against a ±10σ axis sized for attack spikes.
+  // Recompute from the actual window slice each frame instead.
+  if (App.signalsInited && App.normStats) {
+    const iStart = Math.max(0, cur - win);
+    const norm   = App.normalizeSignals || App.forceNormalize;
+    let yMin = Infinity, yMax = -Infinity;
+    for (const sig of App.meta.signals) {
+      const raw = App.data.signals[sig.name];
+      if (!raw) continue;
+      const ns = norm && App.normStats[sig.name];
+      for (let i = iStart; i <= cur; i++) {
+        let v = raw[i];
+        if (v == null || !isFinite(v)) continue;
+        if (ns && ns.std > 0) v = (v - ns.mean) / ns.std;
+        if (v < yMin) yMin = v;
+        if (v > yMax) yMax = v;
+      }
+    }
+    if (isFinite(yMin) && isFinite(yMax)) {
+      const pad = Math.max((yMax - yMin) * 0.15, 0.4);
+      rangeUpdate['yaxis.range'] = [yMin - pad, yMax + pad];
+    }
+  }
+
   if (App.signalsInited) Plotly.relayout('chart-signals', rangeUpdate);
-  if (App.anomalyInited) Plotly.relayout('chart-anomaly', rangeUpdate);
+  // Anomaly chart only needs the x-axis update — never the signal-derived y-range
+  if (App.anomalyInited) Plotly.relayout('chart-anomaly', { 'xaxis.range': [xStart, xEnd] });
 
   // Update cursor line on both charts
   const cursorShape = {
@@ -1328,7 +1793,7 @@ function updateSidebar(idx) {
     const warmth = gData ? (gData.warmth[idx] || 0) : 0;
     const hot    = gData ? (gData.hot[idx] === 1) : false;
     bar.style.width = `${(warmth * 100).toFixed(1)}%`;
-    status.textContent = hot ? 'HOT' : warmth > 0.1 ? 'WARM' : 'COLD';
+    status.textContent = hot ? 'ANOMALY' : warmth > 0.1 ? 'ELEVATED' : 'NORMAL';
     tile.classList.toggle('hot', hot);
   });
 }
@@ -1382,7 +1847,8 @@ document.getElementById('btn-normalize').addEventListener('click', () => {
 
 document.getElementById('btn-rewind').addEventListener('click', () => {
   stopPlayback();
-  App.cursor = App.meta ? App.meta.warmup_end_t + 1 : 0;
+  // Start at warmup_end + windowSize so the first frame is fully within the eval period
+  App.cursor = App.meta ? Math.min(App.meta.warmup_end_t + 1 + App.windowSize, App.meta.total_steps - 1) : 0;
   renderFrame(); updateScrubber();
 });
 
