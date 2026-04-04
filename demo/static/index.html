@@ -20,7 +20,7 @@
   --muted:     #8B949E;
   --accent:    #58A6FF;
   --demand:    #58A6FF;   /* blue  — gr_demand */
-  --gen:       #3FB950;   /* green — gr_generation */
+  --gen:       #A371F7;   /* purple — gr_generation / gr_pumps */
   --imb:       #D29922;   /* amber — gr_imbalance */
   --alert-red: #F85149;
   --warn:      #D29922;
@@ -80,45 +80,41 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
   display: flex; align-items: center; justify-content: space-between;
   padding: 20px 32px; border-bottom: 1px solid var(--border);
 }
-.catalog-header .wordmark { font-size: 18px; font-weight: 700; letter-spacing: -.3px; }
+.catalog-header .wordmark { font-size: 22px; font-weight: 700; letter-spacing: -.3px; }
 .catalog-header .wordmark span { color: var(--accent); }
 .btn-logout { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; transition: color 0.15s; }
 .btn-logout:hover { color: var(--text); }
 
 .catalog-body {
-  flex: 1; overflow-y: auto; padding: 48px 32px;
+  flex: 1; overflow-y: auto; padding: 44px 44px 44px;
   display: flex; flex-direction: column; align-items: center;
 }
-.catalog-title { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
-.catalog-subtitle { color: var(--muted); margin-bottom: 40px; font-size: 15px; }
+.catalog-title { font-size: 34px; font-weight: 700; margin-bottom: 12px; }
+.catalog-subtitle { color: var(--muted); margin-bottom: 32px; font-size: 20px; line-height: 1.5; }
 
-.usecase-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 520px)); gap: 24px; width: 100%; max-width: 1100px; }
+/* Grid: fills page width, snaps from 2→3 columns as use cases are added */
+.usecase-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 28px; width: 100%; max-width: 1280px; }
 
 .usecase-card {
-  background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 16px;
   overflow: hidden; cursor: pointer; transition: border-color 0.2s, transform 0.15s;
-  display: flex; flex-direction: column;
+  display: flex; flex-direction: column; padding-bottom: 72px;
+  position: relative; min-height: 500px;
 }
 .usecase-card:hover { border-color: var(--accent); transform: translateY(-2px); }
-.card-header { padding: 24px 24px 0; }
-.card-tag { display: inline-block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--accent); background: rgba(88,166,255,0.1); border-radius: 4px; padding: 3px 8px; margin-bottom: 12px; }
-.card-title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
-.card-subtitle { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
-.card-desc { font-size: 13px; line-height: 1.55; color: var(--muted); padding: 0 24px 14px; }
-.card-result { padding: 0 24px 14px; }
-.card-result-text { font-size: 12px; font-weight: 700; color: var(--accent); background: rgba(88,166,255,0.08); border: 1px solid rgba(88,166,255,0.2); border-radius: 5px; padding: 6px 10px; letter-spacing: .01em; line-height: 1.5; }
-.card-events { padding: 0 24px 16px; display: flex; flex-direction: column; gap: 6px; }
-.card-event { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--muted); }
-.event-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-.event-dot.primary_gt { background: var(--alert-red); }
-.event-dot.explanatory { background: var(--accent); }
-.card-footer { padding: 14px 24px; border-top: 1px solid var(--border); margin-top: auto; display: flex; justify-content: flex-end; }
-.btn-launch {
-  background: var(--accent); color: #0D1117; border: none; border-radius: 6px;
-  padding: 9px 20px; font-size: 14px; font-weight: 700; cursor: pointer;
-  transition: opacity 0.15s;
+.usecase-card::after {
+  content: 'Click to explore →';
+  position: absolute; bottom: 26px; right: 32px;
+  font-size: 15px; font-weight: 600; color: var(--accent);
+  opacity: 0; transition: opacity 0.2s;
+  pointer-events: none;
 }
-.btn-launch:hover { opacity: 0.9; }
+.usecase-card:hover::after { opacity: 1; }
+.card-header { padding: 48px 44px 0; }
+.card-tag { display: inline-block; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--accent); background: rgba(88,166,255,0.1); border-radius: 4px; padding: 4px 10px; margin-bottom: 22px; }
+.card-title { font-size: 26px; font-weight: 700; margin-bottom: 10px; line-height: 1.25; }
+.card-subtitle { font-size: 16px; color: var(--muted); margin-bottom: 0; padding-bottom: 32px; border-bottom: 1px solid var(--border); }
+.card-desc { font-size: 18px; line-height: 1.65; color: var(--muted); padding: 0 44px; }
 
 /* Loading state */
 .catalog-loading { color: var(--muted); font-size: 15px; }
@@ -192,8 +188,6 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .event-item:hover { border-color: var(--accent); }
 .event-item.detected-event { border-color: rgba(63,185,80,0.35); }
 .event-item.detected-event:hover { border-color: #3FB950; }
-.event-item.tier2-event { border-color: rgba(210,153,34,0.35); }
-.event-item.tier2-event:hover { border-color: var(--warn); }
 .event-item.compact { padding: 5px 8px; border-radius: 5px; display: flex; align-items: center; gap: 7px; }
 .event-item.compact:hover { border-color: rgba(248,81,73,0.5); }
 .event-item-name { font-size: 14px; font-weight: 600; margin-bottom: 3px; }
@@ -204,18 +198,15 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .event-badge.explanatory { background: rgba(88,166,255,0.10); color: var(--accent); }
 .event-outcome { font-size: 12px; font-weight: 700; letter-spacing: .04em; margin-top: 5px; }
 .event-outcome.detected  { color: #3FB950; }
-.event-outcome.tier2     { color: var(--warn); }
-.event-outcome.subthresh { color: var(--muted); }
+.event-outcome.missed    { color: rgba(248,81,73,0.6); }
 .event-outcome-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .event-outcome-dot.detected { background: #3FB950; }
-.event-outcome-dot.tier2    { background: var(--warn); }
 .event-outcome-dot.missed   { background: rgba(248,81,73,0.45); }
 .event-outcome-dot.explanatory { background: var(--accent); opacity: 0.7; }
 .event-short-label { font-size: 10px; color: var(--muted); flex-shrink: 0; max-width: 90px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .events-summary-bar { display: flex; gap: 10px; margin-bottom: 7px; font-size: 11px; flex-wrap: wrap; }
 .events-summary-chip { padding: 2px 7px; border-radius: 4px; font-weight: 700; font-size: 10.5px; letter-spacing: .03em; }
-.events-summary-chip.t1  { background: rgba(63,185,80,0.15); color: #3FB950; }
-.events-summary-chip.t2  { background: rgba(210,153,34,0.15); color: var(--warn); }
+.events-summary-chip.detected { background: rgba(63,185,80,0.15); color: #3FB950; }
 .events-summary-chip.mis { background: rgba(248,81,73,0.09); color: rgba(248,81,73,0.7); }
 .missed-toggle { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 4px 6px; border-radius: 5px; margin: 6px 0 3px; border: 1px solid var(--border); font-size: 11px; color: var(--muted); font-weight: 600; user-select: none; }
 .missed-toggle:hover { border-color: rgba(248,81,73,0.4); color: var(--text); }
@@ -248,7 +239,22 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .perf-val.good  { color: #3FB950; }
 .perf-val.warn  { color: var(--warn); }
 .perf-val.alert { color: var(--alert-red); }
-.perf-note { font-size: 11px; color: var(--muted); font-style: italic; line-height: 1.4; }
+.perf-note { font-size: 11px; color: var(--muted); font-style: italic; line-height: 1.5; }
+
+/* Bullet list resets + accent dot for all bullet contexts */
+.card-desc ul, .scenario-brief ul, .perf-note ul {
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 0; margin-top: 4px;
+}
+.card-desc li { padding: 18px 0 18px 22px; position: relative; line-height: 1.5; font-style: normal; border-bottom: 1px solid var(--border); }
+.card-desc li:last-child { border-bottom: none; }
+.scenario-brief li, .perf-note li { padding-left: 13px; position: relative; line-height: 1.45; font-style: normal; margin-bottom: 4px; }
+.card-desc li::before, .scenario-brief li::before, .perf-note li::before {
+  content: '•'; position: absolute; left: 0;
+  color: var(--accent); font-weight: 700; font-style: normal;
+}
+/* First bullet = outcome headline — full colour + slight weight bump */
+.card-desc li:first-child { color: var(--text); font-weight: 600; }
 .perf-notes-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--accent); cursor: pointer; margin-top: 6px; padding: 2px 0; background: none; border: none; user-select: none; opacity: 0.8; }
 .perf-notes-toggle:hover { opacity: 1; }
 .perf-notes-arrow { font-size: 8px; transition: transform 0.15s; display: inline-block; }
@@ -307,7 +313,7 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
   opacity: 0.85;
 }
 .scrub-tick.tp   { background: #3FB950; }
-.scrub-tick.fp   { background: var(--warn); }
+.scrub-tick.fp   { background: var(--alert-red); }
 
 /* Alert Episodes panel */
 .alert-episodes-toggle {
@@ -332,7 +338,7 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .alert-ep-item:hover { border-color: var(--accent); }
 .alert-ep-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .alert-ep-dot.tp { background: #3FB950; }
-.alert-ep-dot.fp { background: var(--warn); }
+.alert-ep-dot.fp { background: var(--alert-red); }
 .alert-ep-info { flex: 1; min-width: 0; }
 .alert-ep-ts { font-size: 11px; font-family: var(--mono); color: var(--text); white-space: nowrap; }
 .alert-ep-label { font-size: 10px; color: var(--muted); margin-top: 1px; }
@@ -603,11 +609,11 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
         <div class="chart-panel-header">
           <div class="chart-panel-title-wrap">
             <div class="chart-panel-title" id="anomaly-chart-title">Group Warmth</div>
-            <div class="chart-panel-subtitle" id="anomaly-chart-subtitle">Fraction of each group's sensors simultaneously anomalous · red band = system alert · amber = single-group signal</div>
+            <div class="chart-panel-subtitle" id="anomaly-chart-subtitle">Fraction of each group's sensors simultaneously anomalous · red band = system alert fired</div>
           </div>
           <div class="chart-panel-legend" id="legend-anomaly">
             <div class="chart-view-tabs">
-              <button class="chart-view-tab active" id="tab-warmth" title="Show group consensus warmth — the key signal for each tier">Group Warmth</button>
+              <button class="chart-view-tab active" id="tab-warmth" title="Show group consensus warmth">Group Warmth</button>
               <button class="chart-view-tab secondary" id="tab-scores" title="Show raw per-model anomaly probability scores (advanced)">Model Scores</button>
             </div>
           </div>
@@ -760,19 +766,7 @@ function renderCatalog(usecases) {
         <div class="card-title">${esc(uc.title)}</div>
         <div class="card-subtitle">${esc(uc.subtitle || '')}</div>
       </div>
-      ${uc.card_result ? `<div class="card-result"><div class="card-result-text">${esc(uc.card_result)}</div></div>` : ''}
-      <div class="card-desc">${esc(uc.description || '')}</div>
-      <div class="card-events">
-        ${(uc.events || []).filter(ev => ev.tier > 0 || ev.kind === 'explanatory').map(ev => `
-          <div class="card-event">
-            <div class="event-dot ${ev.kind}"></div>
-            <span>${esc(ev.label)}</span>
-          </div>
-        `).join('')}
-      </div>
-      <div class="card-footer">
-        <button class="btn-launch">Launch Replay →</button>
-      </div>
+      <div class="card-desc">${bulletHtml(uc.description || '')}</div>
     </div>
   `).join('');
 
@@ -879,13 +873,31 @@ function buildLeadTakeaway() {
   if (briefBtn) briefBtn.addEventListener('click', () => App._briefToggle && App._briefToggle());
 }
 
+function bulletHtml(text) {
+  // Convert lines starting with • into a <ul><li> list; other lines become <p>
+  // Styling is handled by CSS context (card-desc, scenario-brief, perf-note)
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  let html = '', inList = false;
+  for (const line of lines) {
+    if (line.startsWith('•')) {
+      if (!inList) { html += '<ul>'; inList = true; }
+      html += `<li>${esc(line.slice(1).trim())}</li>`;
+    } else {
+      if (inList) { html += '</ul>'; inList = false; }
+      html += `<p>${esc(line)}</p>`;
+    }
+  }
+  if (inList) html += '</ul>';
+  return html;
+}
+
 function buildScenarioBrief() {
   const text = App.meta.what_to_watch;
   const section = document.getElementById('brief-section');
   if (!text) { section.style.display = 'none'; return; }
   // Start collapsed; user opens via the verdict card "How to explore" link below
   section.style.display = 'none';
-  document.getElementById('brief-body').textContent = text;
+  document.getElementById('brief-body').innerHTML = bulletHtml(text);
   document.getElementById('brief-dismiss').onclick = () => {
     section.style.display = 'none';
   };
@@ -919,9 +931,6 @@ function buildPerfStrip() {
     ? stats.unconfirmed_alerts
     : (stats.system_alerts - stats.true_positives);
 
-  // Detected: fraction display
-  const detectedVal = `${stats.true_positives} / ${primaryGtEvents}`;
-
   strip.innerHTML = `
     <div class="perf-row">
       <span class="perf-label">test period</span>
@@ -932,22 +941,22 @@ function buildPerfStrip() {
       <span class="perf-val">${primaryGtEvents}</span>
     </div>
     <div class="perf-row">
-      <span class="perf-label">system alerts</span>
+      <span class="perf-label">alerts fired</span>
       <span class="perf-val">${stats.system_alerts}</span>
     </div>
     <div class="perf-row">
       <span class="perf-label">events detected</span>
-      <span class="perf-val good">${detectedVal}</span>
+      <span class="perf-val good">${stats.true_positives}</span>
     </div>
     <div class="perf-row">
-      <span class="perf-label">false positives</span>
-      <span class="perf-val ${unconfirmed === 0 ? 'good' : 'alert'}">${unconfirmed}${unconfirmed > 0 ? ' ⚠' : ''}</span>
+      <span class="perf-label">false alarms</span>
+      <span class="perf-val ${unconfirmed === 0 ? 'good' : 'alert'}">${unconfirmed}</span>
     </div>
     ${(stats.recall_note || stats.fp_note) ? `
     <button class="perf-notes-toggle" id="perf-notes-toggle">ℹ Why? <span class="perf-notes-arrow" id="perf-notes-arrow">▶</span></button>
     <div class="perf-notes-wrap" id="perf-notes-wrap">
-      ${stats.recall_note ? `<div class="perf-note">${stats.recall_note}</div>` : ''}
-      ${stats.fp_note ? `<div class="perf-note" style="margin-top:6px">${stats.fp_note}</div>` : ''}
+      ${stats.recall_note ? `<div class="perf-note">${bulletHtml(stats.recall_note)}</div>` : ''}
+      ${stats.fp_note ? `<div class="perf-note" style="margin-top:6px">${bulletHtml(stats.fp_note)}</div>` : ''}
     </div>` : ''}
   `;
 
@@ -967,9 +976,8 @@ function buildPerfStrip() {
    ANOMALY CHART — two-view system (Group Warmth / Model Scores)
 ════════════════════════════════════════════════════════════════ */
 function buildGroupAlertShapes() {
-  // Amber bands: any group is hot but system alert is NOT firing.
-  // These represent Tier-2 detections — single-group consensus events
-  // that didn't reach cross-group threshold.
+  // Amber bands: a sensor group reached internal consensus but no system alert fired.
+  // Partial signal — below the cross-group threshold required for an alert.
   const meta = App.meta;
   const data = App.data;
   const ts = data.timestamps;
@@ -1086,7 +1094,7 @@ function switchAnomView(view) {
   // Update subtitle
   const sub = document.getElementById('anomaly-chart-subtitle');
   if (sub) sub.textContent = view === 'warmth'
-    ? 'Fraction of each group\'s sensors simultaneously anomalous · red band = system alert · amber = single-group signal'
+    ? 'Fraction of each group\'s sensors simultaneously anomalous · red band = alert fired'
     : 'Raw anomaly probability per sensor model (0–1) · dotted line = detection threshold';
   // Re-init the chart with new traces
   initAnomChart();
@@ -1127,12 +1135,9 @@ function showEvHover(ev, anchorEl) {
   if (ev.kind === 'explanatory') {
     outcomeText = 'ℹ Contextual event'; outcomeColor = 'var(--accent)';
   } else if (ev.tier === 1) {
-    outcomeText = `⚡ Tier 1 — System Alert · ${ev.detection_lag_h}h lag`; outcomeColor = '#3FB950';
-  } else if (ev.tier === 2) {
-    outcomeText = '— No system alert · partial signal only'; outcomeColor = 'rgba(248,81,73,0.6)';
+    outcomeText = `✓ Detected · ${ev.detection_lag_h}h lag`; outcomeColor = '#3FB950';
   } else {
-    outcomeText = '— Below detection threshold'; outcomeColor = 'rgba(248,81,73,0.6)';
-    if (ev.miss_reason) outcomeText += ` · ${ev.miss_reason}`;
+    outcomeText = '— Not detected'; outcomeColor = 'rgba(248,81,73,0.6)';
   }
   document.getElementById('ehc-outcome').textContent = outcomeText;
   document.getElementById('ehc-outcome').style.color = outcomeColor;
@@ -1161,8 +1166,7 @@ function buildEventList() {
   const events = App.meta.events || [];
   const el = document.getElementById('event-list');
 
-  // "Detected" = system alert fired (tier 1) or contextual (explanatory)
-  // tier 2 (group-only alert, no system alert) treated same as missed from client perspective
+  // Detected = alert fired (tier 1); all others treated as missed
   const notable  = events.filter(ev => ev.kind === 'explanatory' || (ev.kind === 'primary_gt' && ev.tier === 1));
   const missed   = events.filter(ev => ev.kind === 'primary_gt' && ev.tier !== 1);
 
@@ -1174,11 +1178,8 @@ function buildEventList() {
       dotClass = ''; badge = `<span style="font-size:10px;color:var(--accent);margin-left:auto">ℹ</span>`;
       rowBorder = 'border-color:rgba(88,166,255,0.25)';
     } else if (ev.tier === 1) {
-      dotClass = 'detected'; badge = `<span style="font-size:10px;color:#3FB950;margin-left:auto;font-weight:700">⚡</span>`;
+      dotClass = 'detected'; badge = `<span style="font-size:10px;color:#3FB950;margin-left:auto;font-weight:700">✓</span>`;
       rowBorder = 'border-color:rgba(63,185,80,0.35)';
-    } else if (ev.tier === 2) {
-      dotClass = 'missed'; badge = '';
-      rowBorder = '';
     }
     const shortNum = ev.name
       .replace(/^attack_(\d+)$/, (_, n) => `Attack ${n}`)
@@ -1378,29 +1379,12 @@ function jumpToEvent(ev) {
     }
   } else if (ev.tier === 1) {
     const groups = (ev.detected_by_groups || []).join(', ');
-    parts.push(`<p style="color:#3FB950;font-weight:700;margin-bottom:4px">⚡ Tier 1 — System Alert</p>`);
-    parts.push(`<p style="color:var(--muted);font-size:12px">Detected ${ev.detection_lag_h}h into the ${evTypeName} window · cross-group consensus via: ${groups}</p>`);
-    if (ev.group_alert_note) {
-      parts.push(`<p style="color:var(--muted);font-size:12px;margin-top:6px">${esc(ev.group_alert_note)}</p>`);
-    }
-  } else if (ev.tier === 2) {
-    parts.push(`<p style="color:var(--warn);font-weight:700;margin-bottom:4px">⚠ Tier 2 — Group Alert only</p>`);
-    if (ev.group_alert_groups) {
-      parts.push(`<p style="color:var(--muted);font-size:12px">Single-group consensus reached by: ${ev.group_alert_groups.join(', ')}</p>`);
-    }
-    if (ev.group_alert_note) {
-      parts.push(`<p style="color:var(--muted);font-size:12px;margin-top:4px">${esc(ev.group_alert_note)}</p>`);
-    }
+    parts.push(`<p style="color:#3FB950;font-weight:700;margin-bottom:4px">✓ Detected · ${ev.detection_lag_h}h lag</p>`);
+    if (groups) parts.push(`<p style="color:var(--muted);font-size:12px">Cross-group consensus: ${groups}</p>`);
+  } else {
+    parts.push(`<p style="color:rgba(248,81,73,0.7);font-weight:700;margin-bottom:4px">— Not detected</p>`);
     if (ev.miss_reason) {
-      parts.push(`<p style="color:var(--muted);font-size:12px;margin-top:6px;font-style:italic">${esc(ev.miss_reason)}</p>`);
-    }
-  } else if (ev.detected === false) {
-    parts.push(`<p style="color:var(--muted);font-weight:700;margin-bottom:4px">— Below both thresholds</p>`);
-    if (ev.miss_reason) {
-      parts.push(`<p style="color:rgba(248,81,73,0.7);font-size:12px;font-style:italic;margin-bottom:6px">Why missed: ${esc(ev.miss_reason)}</p>`);
-    }
-    if (ev.group_alert_note) {
-      parts.push(`<p style="color:var(--muted);font-size:12px">${esc(ev.group_alert_note)}</p>`);
+      parts.push(`<p style="color:var(--muted);font-size:12px;font-style:italic">${esc(ev.miss_reason)}</p>`);
     }
   }
 
@@ -1612,14 +1596,12 @@ function buildEventAnnotations(ts) {
   const events = App.meta.events || [];
   return events.map(ev => {
     const shortText = ev.short_label || ev.label;
-    // Tier-based styling
+    // Annotation styling: detected (green, prominent) vs missed (muted red) vs contextual (blue)
     let color, fontSize, yPos, bold;
     if (ev.kind === 'explanatory') {
       color = 'rgba(88,166,255,0.80)'; fontSize = 10; yPos = 0.94; bold = false;
     } else if (ev.tier === 1) {
       color = 'rgba(63,185,80,0.95)';  fontSize = 10.5; yPos = 0.97; bold = true;
-    } else if (ev.tier === 2) {
-      color = 'rgba(210,153,34,0.90)'; fontSize = 10;   yPos = 0.94; bold = true;
     } else {
       color = 'rgba(248,81,73,0.55)';  fontSize = 9;    yPos = 0.91; bold = false;
     }
@@ -1668,7 +1650,7 @@ function buildAlertAnnotations(ts, alertArr) {
   const pushAnnotation = (x0) => {
     annotations.push({
       x: x0, xref: 'x', yref: 'paper', y: 0.97,
-      text: '<b>⚡ SYSTEM ALERT</b>', showarrow: false, textangle: 0,
+      text: '<b>● ALERT</b>', showarrow: false, textangle: 0,
       font: { size: 12, color: 'rgba(248,81,73,1.0)', family: 'SF Mono, Fira Code, monospace' },
       xanchor: 'left', yanchor: 'top', xshift: 6,
       bgcolor: 'rgba(13,17,23,0.7)', borderpad: 3,
