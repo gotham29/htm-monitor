@@ -280,6 +280,37 @@ def _require_float_in_closed01(name: str, v: Any) -> float:
     return fv
 
 
+def _require_safe_usecase_name(name: str) -> str:
+    """Validate and return a safe use-case name (alphanumeric + underscores only)."""
+    import re
+    name = name.strip()
+    if not name:
+        raise ValueError("Use-case name cannot be empty")
+    if not re.match(r"^[A-Za-z0-9_]+$", name):
+        raise ValueError(
+            f"Use-case name must contain only letters, digits, and underscores; got: {name!r}"
+        )
+    return name
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    """Write text to path atomically (via a temp file + rename)."""
+    import tempfile, os
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def calibrate_min_max(
     s: pd.Series,
     low_q: float = 0.01,

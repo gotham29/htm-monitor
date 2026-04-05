@@ -556,7 +556,7 @@ def main() -> None:
     ap.add_argument("--run-name", default=None, help="Optional label for the run (mostly for UX / future defaults)")
     ap.add_argument("--log-level", default="INFO")
     ap.add_argument("--log-file", default=None)
-    ap.add_argument("--no-plot", action="store_true", help="Skip live plotting (useful for large runs)")
+    ap.add_argument("--plot", action="store_true", default=False, help="Enable live plotting (disabled by default)")
     ap.add_argument(
         "--no-analyze",
         action="store_true",
@@ -687,7 +687,7 @@ def main() -> None:
     # Live plot should only show primary GT windows.
     # Explanatory windows remain part of offline analysis semantics.
     gt_by_source = _load_gt_by_source(sources, show_gt, primary_only=True)
-    plot_enabled_effective = bool(plot_cfg.get("enable")) and (not args.no_plot)
+    plot_enabled_effective = bool(plot_cfg.get("enable")) and args.plot
 
     predictive_plot_ctx = _predictive_live_plot_context(
         config_path=args.config,
@@ -925,7 +925,7 @@ def main() -> None:
             sources=sources,
             model_sources=model_sources,
             plot_enabled=plot_enabled_effective,
-            plot_was_skipped=bool(args.no_plot),
+            plot_was_skipped=bool(not args.plot),
             t_min=t_first,
             t_max=t_last,
             ts_start=ts_first,

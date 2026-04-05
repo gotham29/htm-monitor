@@ -459,7 +459,7 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
   </div>
   <div class="catalog-body">
     <div class="catalog-title">Critical Infrastructure Anomaly Detection</div>
-    <div class="catalog-subtitle">Coordinated multi-sensor anomaly detection for SCADA and operational technology networks · powered by Hierarchical Temporal Memory</div>
+    <div class="catalog-subtitle">Coordinated multi-sensor anomaly detection · powered by Hierarchical Temporal Memory</div>
     <div class="usecase-grid" id="usecase-grid">
       <div class="catalog-loading"><div class="spinner"></div></div>
     </div>
@@ -796,20 +796,30 @@ async function launchReplay(id) {
     App.meta = doc.meta;
     App.data = doc.data;
     App.activeUsecase = id;
-    // Start one full window past warmup so the initial view contains only
-    // post-warmup evaluation data (avoids flat-line artifact from training period).
-    // Start just before the first tier-1 (system alert) event so the detection
-    // story unfolds immediately on play. Fall back to eval start if none found.
-    const _firstDetected = (App.meta.events || []).find(e => e.kind === 'primary_gt' && e.tier === 1);
-    if (_firstDetected) {
-      const _ts = App.data.timestamps;
-      const _si = _ts.findIndex(t => t >= _firstDetected.start);
-      // Position so event start is ~20% from left — plenty of pre-event context
-      App.cursor = Math.min(_ts.length - 1,
-        Math.max(App.meta.warmup_end_t + 1, (_si >= 0 ? _si : 0) + Math.floor(App.windowSize * 0.2)));
-    } else {
-      App.cursor = Math.min(App.meta.warmup_end_t + 1 + App.windowSize, App.meta.total_steps - 1);
+
+    // Fix window sizes for the dataset's actual resolution.
+    // Option values are in hours (designed for hourly data); rescale to steps.
+    {
+      const ts = App.data.timestamps;
+      const stepMs = ts.length >= 2
+        ? (new Date(ts[1]).getTime() - new Date(ts[0]).getTime())
+        : 3600000;
+      const stepSec = stepMs / 1000;
+      const sel = document.getElementById('window-select');
+      for (const opt of sel.options) {
+        const hours = parseInt(opt.dataset.hours || opt.value);
+        if (!opt.dataset.hours) opt.dataset.hours = opt.value;
+        opt.value = Math.round(hours * 3600 / stepSec);
+      }
+      App.windowSize = parseInt(sel.value); // use currently selected option
     }
+
+    // Initial view: show ONLY the evaluation period (post-warmup).
+    // Never show the "Learning period" banner in the default view.
+    // Cursor = right edge at end of data; window capped so left edge = warmup_end_t+1.
+    App.cursor = App.meta.total_steps - 1;
+    const evalOnlyWindow = App.cursor - (App.meta.warmup_end_t + 1);
+    if (evalOnlyWindow > 0) App.windowSize = evalOnlyWindow;
     App.playing = false;
     App.signalsInited = false;
     App.anomalyInited = false;
@@ -819,14 +829,12 @@ async function launchReplay(id) {
     document.getElementById('topbar-period').textContent =
       `${fmtDate(App.meta.time_range.start)} → ${fmtDate(App.meta.time_range.end)}`;
 
-    // Scrubber range — start after the window is fully in the eval period
+    // Scrubber covers full timeline including warmup so viewers can scroll back
     const scrub = document.getElementById('scrub');
-    scrub.min = Math.min(App.meta.warmup_end_t + 1 + App.windowSize, App.meta.total_steps - 1);
+    scrub.min = 0;
     scrub.max = App.meta.total_steps - 1;
     scrub.value = App.cursor;
-    // Show eval-period start (first post-warmup timestamp) on scrubber left label
-    const evalStartTs = App.data.timestamps[App.meta.warmup_end_t + 1];
-    document.getElementById('scrub-start').textContent = fmtDate(evalStartTs);
+    document.getElementById('scrub-start').textContent = fmtDate(App.meta.time_range.start);
     document.getElementById('scrub-end').textContent   = fmtDate(App.meta.time_range.end);
 
     // Build sidebar UI
@@ -843,6 +851,27 @@ async function launchReplay(id) {
 
     // Render initial frame
     renderFrame();
+
+    // Force the initial chart view to the eval period only.
+    // Fired at 0 ms (end of current call stack), 200 ms, and 800 ms to survive
+    // any async Plotly redraws or browser form-state restoration that may reset the range.
+    const _forceEvalView = () => {
+      if (!App.data || !App.meta) return;
+      const ts        = App.data.timestamps;
+      const evalIdx   = App.meta.warmup_end_t + 1;
+      const lastIdx   = ts.length - 1;
+      const evalStart = ts[Math.min(evalIdx, lastIdx)];
+      const evalEnd   = ts[lastIdx];
+      App.cursor      = lastIdx;
+      App.windowSize  = lastIdx - evalIdx;
+      renderFrame();
+      updateScrubber();
+      console.log('[HTM] forceEvalView → cursor', App.cursor, 'window', App.windowSize,
+                  'range', evalStart, '→', evalEnd);
+    };
+    setTimeout(_forceEvalView, 0);
+    setTimeout(_forceEvalView, 250);
+    setTimeout(_forceEvalView, 800);
 
   } catch(e) {
     overlay.innerHTML = `<div style="color:var(--alert-red)">${e.message}</div>`;
@@ -1064,12 +1093,19 @@ function initAnomChart() {
   const groupAlertShapes = buildGroupAlertShapes();
   const alertAnnotations = buildAlertAnnotations(ts, data.system.alert);
 
-  const anomLayout = Object.assign({}, PLOTLY_LAYOUT_BASE, {
-    shapes: [...eventShapes, ...groupAlertShapes, ...alertShapes],
-    annotations: alertAnnotations,
-    yaxis: { ...PLOTLY_LAYOUT_BASE.yaxis, range: yRange, title: { text: yTitle, font:{size:10} } },
-    showlegend: false,
-  });
+    {
+    // Pin the initial x-axis range so Plotly never auto-ranges to the full dataset.
+    const _ts = App.data.timestamps;
+    const xRangeStart = _ts[Math.max(0, App.cursor - App.windowSize)];
+    const xRangeEnd   = _ts[Math.min(App.cursor, _ts.length - 1)];
+    anomLayout = Object.assign({}, PLOTLY_LAYOUT_BASE, {
+      shapes: [...eventShapes, ...groupAlertShapes, ...alertShapes],
+      annotations: alertAnnotations,
+      xaxis: { ...PLOTLY_LAYOUT_BASE.xaxis, range: [xRangeStart, xRangeEnd], autorange: false },
+      yaxis: { ...PLOTLY_LAYOUT_BASE.yaxis, range: yRange, title: { text: yTitle, font:{size:10} } },
+      showlegend: false,
+    });
+  }
 
   App.anomalyInited = false;
   Plotly.newPlot('chart-anomaly', traces, anomLayout, {responsive: true, displayModeBar: false});
@@ -1487,13 +1523,19 @@ function renderSigChart(shapes, annotations) {
     const nGroups = Math.min(Math.max(...meta.signals.map(s => s.yaxis_group || 0)) + 1, MAX_YAXES);
     const rightMargin = nGroups > 1 ? 64 : 16;
 
-    layout = Object.assign({}, PLOTLY_LAYOUT_BASE, {
-      shapes, annotations,
-      margin: { l: 60, r: rightMargin, t: 8, b: 36 },
-      yaxis: { ...PLOTLY_LAYOUT_BASE.yaxis, title: { text: axisLabelMap[0] || '', font: {size:10} } },
-      showlegend: true,
-      legend: { orientation: 'h', y: -0.15, font: {size: 10} },
-    });
+    {
+      // Pin the initial x-axis range so Plotly never auto-ranges to the full dataset.
+      const xRangeStart = ts[Math.max(0, App.cursor - App.windowSize)];
+      const xRangeEnd   = ts[Math.min(App.cursor, ts.length - 1)];
+      layout = Object.assign({}, PLOTLY_LAYOUT_BASE, {
+        shapes, annotations,
+        xaxis: { ...PLOTLY_LAYOUT_BASE.xaxis, range: [xRangeStart, xRangeEnd], autorange: false },
+        margin: { l: 60, r: rightMargin, t: 8, b: 36 },
+        yaxis: { ...PLOTLY_LAYOUT_BASE.yaxis, title: { text: axisLabelMap[0] || '', font: {size:10} } },
+        showlegend: true,
+        legend: { orientation: 'h', y: -0.15, font: {size: 10} },
+      });
+    }
 
     if (nGroups > 1) {
       layout.yaxis2 = {
@@ -1706,9 +1748,10 @@ function renderFrame() {
     }
   }
 
+  rangeUpdate['xaxis.autorange'] = false;
   if (App.signalsInited) Plotly.relayout('chart-signals', rangeUpdate);
   // Anomaly chart only needs the x-axis update — never the signal-derived y-range
-  if (App.anomalyInited) Plotly.relayout('chart-anomaly', { 'xaxis.range': [xStart, xEnd] });
+  if (App.anomalyInited) Plotly.relayout('chart-anomaly', { 'xaxis.range': [xStart, xEnd], 'xaxis.autorange': false });
 
   // Update cursor line on both charts
   const cursorShape = {
@@ -1732,7 +1775,7 @@ function renderFrame() {
 
   // Warmup notice
   const warmupNotice = document.getElementById('warmup-notice');
-  warmupNotice.style.display = App.data.in_warmup[cur] ? 'block' : 'none';
+  warmupNotice.style.display = 'none'; // Hidden in demo mode — warmup is internal plumbing, not user-facing
 }
 
 function updateSidebar(idx) {
@@ -1790,6 +1833,13 @@ function updateScrubber() {
 ════════════════════════════════════════════════════════════════ */
 function startPlayback() {
   if (App.playing) return;
+  // If cursor is at the end, wrap around to the beginning
+  if (App.data) {
+    const N = App.data.timestamps.length;
+    if (App.cursor >= N - 1) {
+      App.cursor = 0;
+    }
+  }
   App.playing = true;
   document.getElementById('btn-play').textContent = '⏸';
   document.getElementById('btn-play').classList.add('active');
@@ -1829,8 +1879,8 @@ document.getElementById('btn-normalize').addEventListener('click', () => {
 
 document.getElementById('btn-rewind').addEventListener('click', () => {
   stopPlayback();
-  // Start at warmup_end + windowSize so the first frame is fully within the eval period
-  App.cursor = App.meta ? Math.min(App.meta.warmup_end_t + 1 + App.windowSize, App.meta.total_steps - 1) : 0;
+  // Rewind: jump to the very beginning of the timeline
+  App.cursor = 0;
   renderFrame(); updateScrubber();
 });
 
@@ -1847,6 +1897,8 @@ document.getElementById('speed-select').addEventListener('change', e => {
 });
 
 document.getElementById('window-select').addEventListener('change', e => {
+  // Ignore programmatic/browser-restore changes that fire before data is loaded
+  if (!App.data) return;
   App.windowSize = parseInt(e.target.value) || 0;
   renderFrame();
 });

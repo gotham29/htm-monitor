@@ -448,6 +448,144 @@ USECASE_META = {
             ),
         },
     },
+    # ── Oil Well ──────────────────────────────────────────────────────────────
+    "oilwell_3w": {
+        "id": "oilwell_3w",
+        "title": "Subsea Oil Well — Fault Detection",
+        "subtitle": "Petrobras 3W Benchmark · 2-week warmup · 1-min resolution",
+        "description": (
+            "• Detected all 3 fault types in the demo timeline · 2 false alarms\n"
+            "• Simulated subsea oil well sensor data (Petrobras 3W benchmark)\n"
+            "• 6 HTM models · 3 sensor groups: wellbore, choke valve, gas lift"
+        ),
+        "what_to_watch": (
+            "• Click any fault event to zoom in — each type has a distinct sensor fingerprint\n"
+            "• Severe Slugging: Wellbore group responds as p_pdg oscillates with each liquid slug\n"
+            "• DHSV Closure: Choke group spikes as the downhole safety valve snaps shut\n"
+            "• Hydrate: Gas Lift group degrades progressively as hydrate blocks the production line\n"
+            "• group_k=1 means a single group reaching internal consensus fires the system alert"
+        ),
+        "event_type_label": "Fault",
+        "system_label": "Subsea Oil Well (Petrobras 3W)",
+        "signal_unit": "mixed",
+        "groups": [
+            {"name": "gr_wellbore", "label": "Wellbore",    "color": "#58A6FF", "models": ["p_pdg_model", "p_tpt_model", "t_tpt_model"]},
+            {"name": "gr_choke",    "label": "Choke Valve", "color": "#D29922", "models": ["p_mon_ckp_model"]},
+            {"name": "gr_gaslift",  "label": "Gas Lift",    "color": "#A371F7", "models": ["p_jus_ckgl_model", "qgl_model"]},
+        ],
+        "signals": [
+            {"name": "p_pdg",      "label": "Downhole Pressure",    "group": "gr_wellbore", "unit": "Pa",   "yaxis_group": 1},
+            {"name": "p_tpt",      "label": "Tree-top Pressure",    "group": "gr_wellbore", "unit": "Pa",   "yaxis_group": 1},
+            {"name": "t_tpt",      "label": "Tree-top Temperature", "group": "gr_wellbore", "unit": "degC", "yaxis_group": 2},
+            {"name": "p_mon_ckp",  "label": "Choke Inlet Pressure", "group": "gr_choke",    "unit": "Pa",   "yaxis_group": 1},
+            {"name": "p_jus_ckgl", "label": "Gas Lift Pressure",    "group": "gr_gaslift",  "unit": "Pa",   "yaxis_group": 1},
+            {"name": "qgl",        "label": "Gas Lift Rate",        "group": "gr_gaslift",  "unit": "m3/d", "yaxis_group": 3},
+        ],
+        "events": [
+            {
+                "name": "severe_slugging_1",
+                "label": "Fault 1 — Severe Slugging",
+                "kind": "primary_gt", "tier": 1, "detected": True, "group_alert": True,
+                "start": "2021-03-15 08:20:00", "end": "2021-03-15 14:19:00",
+                "description": (
+                    "Periodic liquid slugs cycling through the wellbore caused characteristic "
+                    "pressure oscillations at p_pdg. The Wellbore group reached consensus and "
+                    "fired a system alert."
+                ),
+                "short_label": "Slugging — wellbore oscillation",
+            },
+            {
+                "name": "severe_slugging_2",
+                "label": "Fault 2 — Severe Slugging (2nd instance)",
+                "kind": "primary_gt", "tier": 1, "detected": True, "group_alert": True,
+                "start": "2021-03-15 22:40:00", "end": "2021-03-16 04:39:00",
+                "description": (
+                    "Second severe slugging event. The system remained elevated through the "
+                    "inter-event bridge and re-detected the slugging pattern immediately."
+                ),
+                "short_label": "Slugging — second instance",
+            },
+            {
+                "name": "dhsv_closure",
+                "label": "Fault 3 — Spurious DHSV Closure",
+                "kind": "primary_gt", "tier": 1, "detected": True, "group_alert": True,
+                "start": "2021-03-16 13:00:00", "end": "2021-03-16 15:52:00",
+                "description": (
+                    "Spurious closure of the downhole safety valve (DHSV) caused a pressure "
+                    "transient at the choke inlet. The Choke group caught the anomaly "
+                    "approximately 2 hours after valve actuation."
+                ),
+                "short_label": "DHSV closure — pressure transient",
+            },
+            {
+                "name": "hydrate",
+                "label": "Fault 4 — Hydrate in Production Line",
+                "kind": "primary_gt", "tier": 1, "detected": True, "group_alert": True,
+                "start": "2021-03-17 00:13:00", "end": "2021-03-18 00:12:00",
+                "description": (
+                    "Hydrate formation progressively blocked the production line. "
+                    "The system fired 8 alert episodes as the restriction grew, "
+                    "culminating in a 531-row sustained alert once blockage became severe."
+                ),
+                "short_label": "Hydrate — progressive blockage",
+            },
+        ],
+        "threshold": 0.95,
+        "warmup_end_t": 3000,
+        "lead_takeaway": (
+            "All 3 fault types detected across a 52-hour post-warmup evaluation. "
+            "Severe slugging triggered Wellbore alerts from characteristic p_pdg pressure oscillations. "
+            "DHSV closure registered at the Choke group within 2 hours of valve actuation. "
+            "Hydrate formation produced a progressive multi-episode detection pattern — the system "
+            "tracked the growing blockage from transient onset to full restriction. "
+            "Of 13 alert episodes, 11 overlapped true fault windows. The 2 false alarms occurred in "
+            "inter-event bridge segments where data from a different well created a momentary "
+            "distribution shift against the frozen normal model."
+        ),
+        "verdict_headline": "3 of 3 fault types detected · 2 false alarms",
+        "verdict_tagline": "Every fault type caught — slugging, valve failure, and hydrate formation.",
+        # Model display config — one entry per HTM model
+        "models": [
+            {"name": "p_pdg_model",     "label": "Downhole Pressure",    "group": "gr_wellbore", "signal": "p_pdg"},
+            {"name": "p_tpt_model",     "label": "Tree-top Pressure",    "group": "gr_wellbore", "signal": "p_tpt"},
+            {"name": "t_tpt_model",     "label": "Tree-top Temperature", "group": "gr_wellbore", "signal": "t_tpt"},
+            {"name": "p_mon_ckp_model", "label": "Choke Inlet Pressure", "group": "gr_choke",    "signal": "p_mon_ckp"},
+            {"name": "p_jus_ckgl_model","label": "Gas Lift Pressure",    "group": "gr_gaslift",  "signal": "p_jus_ckgl"},
+            {"name": "qgl_model",       "label": "Gas Lift Rate",        "group": "gr_gaslift",  "signal": "qgl"},
+        ],
+                # Source CSV mapping — signal_name → csv filename in data_dir
+        "_source_csvs": {
+            "p_pdg":      "p_pdg.csv",
+            "p_tpt":      "p_tpt.csv",
+            "t_tpt":      "t_tpt.csv",
+            "p_mon_ckp":  "p_mon_ckp.csv",
+            "p_jus_ckgl": "p_jus_ckgl.csv",
+            "qgl":        "qgl.csv",
+        },
+        "card_result": "3 / 3 fault types detected · 2 false alarms · 3-day evaluation",
+        "eval_stats": {
+            "eval_label": "3-day post-warmup evaluation (Mar 15–18)",
+            "system_alerts": 13,
+            "true_positives": 4,
+            "false_positives": 2,
+            "primary_gt_events": 4,
+            "recall_note": (
+                "• All 4 fault events detected (both severe slugging instances, DHSV closure, hydrate)\n"
+                "• 13 alert episodes total — extended faults like hydrate generate multiple episodes as blockage grows\n"
+                "• Severe Slugging: Wellbore group (p_pdg oscillations); DHSV: Choke group; Hydrate: Gas Lift group"
+            ),
+            "fp_note": (
+                "• Both false alarms in normal bridge segments between fault events\n"
+                "• Bridge data drawn from different wells than warmup — momentary distribution shift\n"
+                "• In real deployment, training on a single well baseline eliminates this artifact"
+            ),
+            "group_alert_note": (
+                "With group_k=1, a single sensor group reaching internal consensus fires the system alert — "
+                "each fault type has a distinct fingerprint: Wellbore for slugging, "
+                "Choke for DHSV, Gas Lift for hydrate."
+            ),
+        },
+    },
 }
 
 
@@ -770,6 +908,10 @@ def main():
         default_run_csv  = str(repo_root / "outputs" / "batadal_ctown" / "run.csv")
         default_manifest = str(repo_root / "outputs" / "batadal_ctown" / "run.manifest.json")
         default_data_dir = str(repo_root / "data" / "batadal_ctown")
+    elif uc == "oilwell_3w":
+        default_run_csv  = str(repo_root / "outputs" / "oilwell_3w" / "run.csv")
+        default_manifest = str(repo_root / "outputs" / "oilwell_3w" / "run.manifest.json")
+        default_data_dir = str(repo_root / "data" / "oilwell_3w" / "demo_timeline")
     else:
         # Generic fallback for future use cases
         default_run_csv  = str(repo_root / "outputs" / uc / "run.csv")
